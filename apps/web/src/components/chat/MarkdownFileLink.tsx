@@ -27,7 +27,7 @@ import {
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
 import { WorkspaceEntryTooltip } from "./WorkspaceEntryIcon";
 
-interface MarkdownFileLinkProps {
+export interface MarkdownFileLinkProps {
   environmentId: EnvironmentId | null;
   href: string;
   targetPath: string;
