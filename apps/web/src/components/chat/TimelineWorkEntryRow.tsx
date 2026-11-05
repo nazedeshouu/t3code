@@ -1,5 +1,6 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
+import { WorkEntryFileLabelView, WorkLogFileLink } from "./WorkLogFileLink";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -43,6 +44,7 @@ import {
   threadReadTargetId,
   threadReadTargetTitle,
   workEntryDisplayLabel,
+  workEntryFileLabel,
   workEntryReadOutput,
 } from "./MessagesTimeline.logic";
 import { cn } from "~/lib/utils";
@@ -119,6 +121,10 @@ const toolCallExpandedBodyClassName =
   "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-(length:--font-size-code,var(--text-2xs)) leading-relaxed select-text";
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+// Taking its width would slide a long path's filename out from under the pointer.
+const timestampYieldsToLinkClassName =
+  "group-has-[a:hover]/timeline-row:absolute! group-has-[a:hover]/timeline-row:opacity-0!";
 
 export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
   const ctx = use(TimelineRowCtx);
@@ -421,6 +427,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? "text-secondary-label"
         : "text-foreground/80";
   const threadLabel = isReasoning ? null : threadReadLabel(previewText, threadTarget);
+  const fileLabel =
+    isReasoning || questionHeading
+      ? null
+      : workEntryFileLabel(workEntry, previewText, workspaceRoot);
   const accessiblePreview = [threadLabel?.text ?? previewText, answerPreview]
     .filter(Boolean)
     .join(": ");
@@ -490,6 +500,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                   environmentId={ctx.activeThreadEnvironmentId}
                   linked
                 />
+              ) : fileLabel ? (
+                <WorkEntryFileLabelView label={fileLabel} />
               ) : (
                 previewText
               )}
@@ -554,7 +566,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               />
             </span>
           ) : null}
-          <TimelineRowTimestamp createdAt={workEntry.createdAt} timestampFormat={timestampFormat} />
+          <TimelineRowTimestamp
+            createdAt={workEntry.createdAt}
+            timestampFormat={timestampFormat}
+            className={timestampYieldsToLinkClassName}
+          />
         </>
       }
     >
@@ -597,7 +613,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           ) : (
             <>
               {expandedBody ? (
-                <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+                <pre className={toolCallExpandedBodyClassName}>
+                  {plainOutput && toolGroupAction(workEntry) === "read" && !showFailedIndicator
+                    ? plainOutput.split("\n").map((path) => (
+                        <span key={path} className="block">
+                          <WorkLogFileLink path={path} label={path} layout="wrap" />
+                        </span>
+                      ))
+                    : expandedBody}
+                </pre>
               ) : null}
               {plainOutputFetches && workEntry.projectedItem ? (
                 <FetchedToolOutput
