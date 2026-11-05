@@ -4,6 +4,7 @@ import {
   isLocalEditorFileHref,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
+  resolveToolFileLinkMeta,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
 import {
@@ -40,6 +41,37 @@ describe("isLocalEditorFileHref", () => {
     ]) {
       expect(isLocalEditorFileHref(href), href).toBe(false);
     }
+  });
+});
+
+describe("resolveToolFileLinkMeta", () => {
+  it("resolves a relative path against the thread's folder", () => {
+    expect(resolveToolFileLinkMeta("src/app.ts", "/work")).toMatchObject({
+      filePath: "/work/src/app.ts",
+      workspaceRelativePath: "src/app.ts",
+      workspaceLookupPath: null,
+    });
+  });
+
+  it("keeps a path outside the workspace absolute", () => {
+    expect(resolveToolFileLinkMeta("/tmp/pw/a.jpg", "/work")).toMatchObject({
+      filePath: "/tmp/pw/a.jpg",
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("takes literal characters a markdown destination would decode", () => {
+    expect(resolveToolFileLinkMeta("/tmp/100%25 done (1).md", "/work")?.filePath).toBe(
+      "/tmp/100%25 done (1).md",
+    );
+  });
+
+  it("gives up on a relative path with no folder to resolve it against", () => {
+    expect(resolveToolFileLinkMeta("src/app.ts", undefined)).toBeNull();
+  });
+
+  it("opens a host path with no thread folder", () => {
+    expect(resolveToolFileLinkMeta("/tmp/a.txt", undefined)?.filePath).toBe("/tmp/a.txt");
   });
 });
 

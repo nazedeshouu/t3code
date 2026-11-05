@@ -1,5 +1,10 @@
 import { isLocalEditorFileUrl } from "@t3tools/contracts";
-import { fileBasename, isAbsolutePath, workspaceRelativeFilePath } from "@t3tools/shared/path";
+import {
+  fileBasename,
+  isAbsolutePath,
+  isHostPath,
+  workspaceRelativeFilePath,
+} from "@t3tools/shared/path";
 import {
   inlineCodeFilePathCandidate,
   isRelativeFilePath,
@@ -7,7 +12,11 @@ import {
   parseMarkdownFileLink,
   resolveMarkdownFileLinkTarget,
 } from "@t3tools/shared/markdownLinks";
-import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import {
+  parseFileUrlHref,
+  resolvePathLinkTarget,
+  splitFilePathPosition,
+} from "@t3tools/shared/fileLinks";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { isTerminalLinkActivation } from "./terminal-links";
@@ -94,6 +103,16 @@ export function resolveMarkdownFileLinkMeta(
         ? source.path
         : null,
   };
+}
+
+/** A tool's path is already literal, so it skips the decoding a markdown destination needs. */
+export function resolveToolFileLinkMeta(
+  path: string,
+  cwd: string | undefined,
+): MarkdownFileLinkMeta | null {
+  if (!cwd && !isHostPath(path)) return null;
+  const targetPath = cwd ? resolvePathLinkTarget(path, cwd) : path;
+  return { ...buildFileLinkMetaFromTarget(targetPath, cwd), workspaceLookupPath: null };
 }
 
 function buildFileLinkMetaFromTarget(targetPath: string, cwd?: string) {

@@ -134,6 +134,47 @@ function workEntryReadPaths(entry: WorkLogEntry, workspaceRoot: string | undefin
   );
 }
 
+export interface WorkEntryFileLabel {
+  readonly prefix: string;
+  readonly path: string;
+  readonly displayPath: string;
+  readonly suffix: string;
+}
+
+/**
+ * Finds the path a row's label names, from the tool's own input rather than the text, so nothing
+ * that merely looks like a path becomes a link. Null where opening it could only lead nowhere.
+ */
+export function workEntryFileLabel(
+  entry: WorkLogEntry,
+  label: string,
+  workspaceRoot: string | undefined,
+): WorkEntryFileLabel | null {
+  const action = toolGroupAction(entry);
+  if (action !== "read" && action !== "edit") return null;
+  if (action === "read" && workEntryDisplayIndicatesToolFailure(entry)) return null;
+  const paths = action === "read" ? workEntryReadRawPaths(entry) : (entry.changedFiles ?? []);
+  const [path] = paths;
+  if (path === undefined || workEntryDeletedPaths(entry).has(path)) return null;
+  const displayPath = formatWorkspaceRelativePath(path, workspaceRoot);
+  const suffix = paths.length > 1 ? `+${paths.length - 1} more` : "";
+  const end = suffix ? ` ${suffix}` : "";
+  const prefix = label.slice(0, Math.max(0, label.length - displayPath.length - end.length));
+  if (label !== `${prefix}${displayPath}${end}` || (prefix && !prefix.endsWith(" "))) return null;
+  return { prefix: prefix.trimEnd(), path, displayPath, suffix };
+}
+
+export function workEntryDeletedPaths(entry: Pick<WorkLogEntry, "structuredPayload">) {
+  const item = entry.structuredPayload;
+  return new Set(
+    item?.type === "file_change"
+      ? (item.changes ?? [])
+          .filter((change) => change.operation === "delete")
+          .map((change) => change.path)
+      : [],
+  );
+}
+
 export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string | undefined) {
   if (entry.itemType === "system_notice") return entry.label;
   if (entry.itemType === "reasoning" || entry.tone === "thinking") {

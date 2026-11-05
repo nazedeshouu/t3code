@@ -435,6 +435,47 @@ describe("MessagesTimeline work rows", () => {
   );
 });
 
+describe("MessagesTimeline live work row", () => {
+  it("still toggles from the keyboard, and not when a key lands on something inside it", async () => {
+    const runId = RunId.make("run-live-read");
+    await using screen = await renderTimeline(
+      [
+        work("live-read", {
+          runId,
+          label: "Read",
+          tone: "tool",
+          itemType: "dynamic_tool",
+          requestKind: "file-read",
+          toolLifecycleStatus: "inProgress",
+          structuredPayload: {
+            type: "dynamic_tool",
+            toolName: "Read",
+            input: { file_path: "/tmp/shots/page.jpg" },
+          },
+        }),
+      ],
+      { isWorking: true, runningRunId: runId },
+    );
+    const row = () => screen.button("Read /tmp/shots/page.jpg");
+    const press = async (target: HTMLElement, key: string) => {
+      await act(async () => {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+        );
+      });
+    };
+
+    expect(row().tagName).toBe("DIV");
+    expect(row().getAttribute("aria-expanded")).toBe("false");
+    await press(row(), " ");
+    expect(row().getAttribute("aria-expanded")).toBe("true");
+    await press(row(), "Enter");
+    expect(row().getAttribute("aria-expanded")).toBe("false");
+    await press(row().querySelector("span")!, "Enter");
+    expect(row().getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
 describe("MessagesTimeline messages", () => {
   it("settles when equally long messages have very different rendered heights", async () => {
     const props = baseProps();

@@ -26,8 +26,10 @@ import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { CommandOutputPanel, useCommandOutputStreaming } from "./CommandOutputPanel";
 import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
+import { workEntryDeletedPaths } from "./MessagesTimeline.logic";
 import { ShellCommandBlock } from "./ShellCommandBlock";
 import type { TurnItemSource } from "./timelineRowContext";
+import { WorkLogFileLink } from "./WorkLogFileLink";
 
 interface V2ItemInspectorProps {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -37,6 +39,15 @@ interface V2ItemInspectorProps {
   readonly onOpenToolDiff?: ((target: ToolCallDiffTarget) => void) | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   readonly source?: TurnItemSource | undefined;
+}
+
+function InspectedFilePath(props: {
+  path: string;
+  workspaceRoot: string | undefined;
+  deleted: boolean;
+}) {
+  const label = formatWorkspaceRelativePath(props.path, props.workspaceRoot);
+  return props.deleted ? label : <WorkLogFileLink path={props.path} label={label} layout="wrap" />;
 }
 
 function SyntaxTokens({
@@ -276,7 +287,11 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-muted-foreground">
-              {formatWorkspaceRelativePath(item.fileName, props.workspaceRoot)}
+              <InspectedFilePath
+                path={item.fileName}
+                workspaceRoot={props.workspaceRoot}
+                deleted={workEntryDeletedPaths({ structuredPayload: item }).has(item.fileName)}
+              />
             </span>
             {item.additions !== undefined || item.deletions !== undefined ? (
               <span>
@@ -308,7 +323,11 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
               {item.changes.map((change) => (
                 <li key={JSON.stringify([change.operation, change.oldPath, change.path])}>
                   {change.operation} {change.oldPath ? `${change.oldPath} → ` : ""}
-                  {formatWorkspaceRelativePath(change.path, props.workspaceRoot)}
+                  <InspectedFilePath
+                    path={change.path}
+                    workspaceRoot={props.workspaceRoot}
+                    deleted={change.operation === "delete"}
+                  />
                   {change.fileType || change.mimeType
                     ? ` (${[change.fileType, change.mimeType].filter(Boolean).join(", ")})`
                     : ""}

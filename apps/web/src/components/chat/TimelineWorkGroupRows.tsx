@@ -16,6 +16,7 @@ import { Button } from "../ui/button";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import {
   liveWorkEntryLabel,
+  workEntryFileLabel,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   workEntryIsVisibleInGroup,
@@ -47,6 +48,7 @@ import {
   ReasoningTraceContent,
   SimpleWorkEntryRow,
 } from "./TimelineWorkEntryRow";
+import { WorkEntryFileLabelView } from "./WorkLogFileLink";
 import {
   THINKING_PREVIEW_PLUGINS,
   THOUGHT_PREVIEW_PLUGINS,
@@ -508,21 +510,31 @@ export function LiveWorkEntryTimelineRow({
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
   const thoughtLine = row.thought && !row.expanded ? liveThoughtLine(row.thought.detail ?? "") : "";
   const thoughtIsStatus = thoughtLine !== "" && row.entry === row.thought;
+  const fileLabel =
+    thoughtIsStatus || row.entry.itemType === "reasoning"
+      ? null
+      : workEntryFileLabel(row.entry, label, ctx.workspaceRoot);
+  const accessibleLabel = [thoughtLine, threadLabel?.text ?? label].filter(Boolean).join(" ");
+  const toggle = () => ctx.onToggleWorkGroup(row.groupId, row.id);
 
   return (
-    <button
-      type="button"
+    // A div, not a button: a button cannot hold the path's link.
+    <div
+      role="button"
+      tabIndex={0}
       className={cn(
         "group/live-work flex w-full max-w-full cursor-pointer rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
         thoughtLine ? "flex-col items-start" : "min-h-6 items-center",
       )}
-      aria-label={
-        failed
-          ? `${thoughtLine ? `${thoughtLine} ` : ""}${threadLabel?.text ?? label}, tool call failed`
-          : undefined
-      }
+      aria-label={failed ? `${accessibleLabel}, tool call failed` : accessibleLabel}
       aria-expanded={row.expanded}
-      onClick={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
+      onClick={toggle}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          toggle();
+        }
+      }}
     >
       {thoughtLine ? (
         <WorkLogRow
@@ -572,6 +584,9 @@ export function LiveWorkEntryTimelineRow({
               environmentId={ctx.activeThreadEnvironmentId}
               linked={false}
             />
+          ) : fileLabel ? (
+            // Keyed so a press that outlives this entry cannot open the next one's file.
+            <WorkEntryFileLabelView key={row.entry.id} label={fileLabel} />
           ) : (
             label
           )
@@ -581,7 +596,7 @@ export function LiveWorkEntryTimelineRow({
         failed={failed}
         active={row.active}
       />
-    </button>
+    </div>
   );
 }
 

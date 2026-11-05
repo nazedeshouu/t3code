@@ -6,6 +6,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import { fileBasename } from "@t3tools/shared/path";
 import { memo, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import { readLocalApi } from "../../localApi";
@@ -14,6 +15,7 @@ import { shouldOpenMarkdownFileLinkInEditor } from "../../markdown-links";
 import type { markdownFileCopyPaths } from "../../markdownFileHostPath";
 import { documentChipKindForFileName } from "../../pierre-icons";
 import { ContextChip } from "../ContextChip";
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { FileTagChipContent } from "./FileTagChip";
@@ -46,9 +48,16 @@ export interface MarkdownFileLinkProps {
   onOpenMedia?: (() => void) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
+  /** Renders the link as this quiet path, for text that names a file, instead of as a chip. */
+  pathLabel?: string | undefined;
+  pathLayout?: "truncate" | "wrap" | undefined;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
+// Text-clipped shine masks in every decoration, whatever its color, so it needs no-underline.
+const MARKDOWN_FILE_PATH_CLASS_NAME =
+  "rounded-sm underline decoration-transparent underline-offset-2 transition-colors duration-100 group-hover/timeline-row:decoration-secondary-label/40 pointer-coarse:decoration-secondary-label/40 hover:text-foreground hover:decoration-current in-[.live-tool-shine]:not-hover:no-underline focus-visible:outline-2 focus-visible:outline-ring";
+const MAX_PATH_TAIL_LENGTH = 32;
 
 export const MarkdownFileLink = memo(function MarkdownFileLink({
   environmentId,
@@ -71,6 +80,8 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onReveal,
   revealLabel,
   resolveCopyPaths,
+  pathLabel,
+  pathLayout = "truncate",
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = () => {
     if (!onOpen) {
@@ -325,31 +336,56 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
     canOpenInPanel,
   });
   const chipKind = documentChipKindForFileName(iconPath) ?? "mention";
+  const handlePrimaryClick = (event: ReactMouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+      handleOpenInEditor();
+      return;
+    }
+    if (useBrowserPrimaryAction) {
+      handleOpenInBrowser();
+      return;
+    }
+    handleOpenInFilePreview();
+  };
 
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          hasPrimaryAction ? (
+          pathLabel !== undefined ? (
+            <a
+              href={href}
+              dir="ltr"
+              draggable={false}
+              aria-label={`Open ${targetPath}`}
+              className={cn(
+                MARKDOWN_FILE_PATH_CLASS_NAME,
+                pathLayout === "truncate" && "inline-flex min-w-0 max-w-full",
+              )}
+              onClick={handlePrimaryClick}
+              onAuxClick={(event) => event.preventDefault()}
+              onContextMenu={handleContextMenu}
+            >
+              {pathLayout === "truncate" ? (
+                <MiddleTruncate
+                  value={pathLabel}
+                  tail={Math.min(fileBasename(pathLabel).length, MAX_PATH_TAIL_LENGTH)}
+                  showTitle={false}
+                />
+              ) : (
+                pathLabel
+              )}
+            </a>
+          ) : hasPrimaryAction ? (
             <ContextChip
               kind={chipKind}
               dir="ltr"
               render={<a href={href} />}
               className={MARKDOWN_FILE_LINK_CLASS_NAME}
               data-markdown-copy={copyMarkdown}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
-                  handleOpenInEditor();
-                  return;
-                }
-                if (useBrowserPrimaryAction) {
-                  handleOpenInBrowser();
-                  return;
-                }
-                handleOpenInFilePreview();
-              }}
+              onClick={handlePrimaryClick}
               onContextMenu={handleContextMenu}
             >
               <FileTagChipContent
@@ -422,7 +458,9 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpenMedia === next.onOpenMedia &&
     previous.onReveal === next.onReveal &&
     previous.resolveCopyPaths === next.resolveCopyPaths &&
-    previous.revealLabel === next.revealLabel
+    previous.revealLabel === next.revealLabel &&
+    previous.pathLabel === next.pathLabel &&
+    previous.pathLayout === next.pathLayout
   );
 }
 

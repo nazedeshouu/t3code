@@ -33,7 +33,95 @@ import {
   resolveAssistantMessageCopyState,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
+  workEntryFileLabel,
 } from "./MessagesTimeline.logic";
+import type { WorkLogEntry } from "../../session-logic";
+
+describe("workEntryFileLabel", () => {
+  const ROOT = "/work/app";
+  const read = (input: Record<string, unknown>, overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "read",
+      createdAt: "2026-11-05T00:00:00.000Z",
+      label: "Read",
+      tone: "tool",
+      itemType: "dynamic_tool",
+      toolLifecycleStatus: "completed",
+      structuredPayload: { type: "dynamic_tool", toolName: "Read", input },
+      ...overrides,
+    }) as unknown as WorkLogEntry;
+  const edit = (changedFiles: string[], overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "edit",
+      createdAt: "2026-11-05T00:00:00.000Z",
+      label: "Changed file",
+      tone: "tool",
+      itemType: "file_change",
+      toolLifecycleStatus: "completed",
+      changedFiles,
+      ...overrides,
+    }) as unknown as WorkLogEntry;
+  const labelOf = (entry: WorkLogEntry, workspaceRoot: string | undefined = ROOT) =>
+    workEntryFileLabel(entry, workEntryDisplayLabel(entry, workspaceRoot), workspaceRoot);
+
+  it("links a read outside the workspace", () => {
+    expect(labelOf(read({ file_path: "/tmp/pw/shots/1440-business-p1.jpg" }))).toEqual({
+      prefix: "Read",
+      path: "/tmp/pw/shots/1440-business-p1.jpg",
+      displayPath: "/tmp/pw/shots/1440-business-p1.jpg",
+      suffix: "",
+    });
+  });
+
+  it("keeps the raw path while the label shows it relative to the workspace", () => {
+    expect(labelOf(read({ file_path: "/work/app/docs/design notes/a b.md" }))).toMatchObject({
+      path: "/work/app/docs/design notes/a b.md",
+      displayPath: "app/docs/design notes/a b.md",
+    });
+  });
+
+  it("links the first of many files and leaves the count to toggle the row", () => {
+    expect(labelOf(edit(["/work/app/a.ts", "/work/app/b.ts", "/work/app/c.ts"]))).toEqual({
+      prefix: "",
+      path: "/work/app/a.ts",
+      displayPath: "app/a.ts",
+      suffix: "+2 more",
+    });
+  });
+
+  it("does not mistake a short path for part of the verb", () => {
+    expect(workEntryFileLabel(read({ file_path: "d" }), "Read d", undefined)).toMatchObject({
+      prefix: "Read",
+      displayPath: "d",
+    });
+  });
+
+  it("links an edit that failed, since its file is still there", () => {
+    expect(labelOf(edit(["/work/app/a.ts"], { toolLifecycleStatus: "failed" }))).not.toBeNull();
+  });
+
+  it.each([
+    ["a read that failed", read({ file_path: "/a.ts" }, { toolLifecycleStatus: "failed" })],
+    ["a read that was declined", read({ file_path: "/a.ts" }, { toolLifecycleStatus: "declined" })],
+    [
+      "a file the edit deleted",
+      edit(["/work/app/a.ts"], {
+        structuredPayload: {
+          type: "file_change",
+          changes: [{ operation: "delete", path: "/work/app/a.ts" }],
+        },
+      }),
+    ],
+    ["a command naming a path", edit([], { itemType: "command_execution", command: "cat /a.ts" })],
+  ])("leaves %s as text", (_name, entry) => {
+    expect(labelOf(entry)).toBeNull();
+  });
+
+  it("leaves a label that does not name the path as text", () => {
+    expect(workEntryFileLabel(edit(["/work/app/a.ts"]), "Applied the patch", ROOT)).toBeNull();
+    expect(workEntryFileLabel(edit(["a.ts"]), "Rereada.ts", undefined)).toBeNull();
+  });
+});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("copies the rendered representation of Codex directives", () => {
