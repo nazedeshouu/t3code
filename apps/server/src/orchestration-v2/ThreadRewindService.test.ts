@@ -72,6 +72,9 @@ const TURN = (ordinal: number) => ProviderTurnId.make(`turn:${ordinal}`);
 const CHECKPOINT = (ordinal: number) => CheckpointId.make(`checkpoint:${ordinal}`);
 
 interface Fake {
+  readonly captureCheckpoint: ReturnType<
+    typeof vi.fn<CheckpointStore["Service"]["captureCheckpoint"]>
+  >;
   readonly openSession: ReturnType<typeof vi.fn<() => void>>;
   readonly rewindFiles: ReturnType<typeof vi.fn<ProviderRewindFiles>>;
   readonly rollbackThread: ReturnType<typeof vi.fn<ProviderRollback>>;
@@ -90,6 +93,7 @@ type ProviderRollback = ProviderAdapter.ProviderAdapterV2SessionRuntime["rollbac
 
 const makeFake = (input: { readonly file?: string; readonly restoredContent?: string }): Fake => {
   const fake: Fake = {
+    captureCheckpoint: vi.fn(() => Effect.void),
     openSession: vi.fn<() => void>(),
     rewindFiles: vi.fn<ProviderRewindFiles>((request) =>
       Effect.gen(function* () {
@@ -147,7 +151,7 @@ const makeLayer = (
       deleteStaleRefs: fake.deleteStaleRefs,
     }),
     Layer.mock(CheckpointStore)({
-      captureCheckpoint: () => Effect.void,
+      captureCheckpoint: fake.captureCheckpoint,
       deleteCheckpointRefs: () => Effect.void,
       diffCheckpoints: () => Effect.succeed("3\t1\tsrc/a.ts\0"),
     }),
@@ -1081,6 +1085,20 @@ it.effect("derives list stats from checkpoints for the git engine", () => {
       state: "changed",
       stats: { filesChanged: 1, insertions: 4, deletions: 2, primaryPath: "src/a.ts" },
     });
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("concurrent previews each capture to a ref of their own", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd, promptRefs: false });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const preview = service.preview({ threadId, messageId: MESSAGE(2) });
+    yield* Effect.all([preview, preview], { concurrency: "unbounded" });
+    const [first, second] = fake.captureCheckpoint.mock.calls.map(([input]) => input.checkpointRef);
+    assert.isDefined(first);
+    assert.notEqual(first, second);
   }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
 });
 

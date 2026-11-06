@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+
 import {
   CheckpointId,
   CheckpointRef,
@@ -67,7 +70,7 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 const STASH_DIRECTORY = "rewind-undo";
 const RECORD_FILE = "record.json";
-const UNDO_REFS_PREFIX = "refs/t3/orchestration-v2/rewind-undo";
+const PREVIEW_REFS_PREFIX = "refs/t3/orchestration-v2/rewind-preview";
 const UNDO_UNAVAILABLE = "This rewind can no longer be undone.";
 const REWIND_FAILED = "The rewind could not finish. Nothing was changed.";
 const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't be restored.";
@@ -452,7 +455,7 @@ export const layer = Layer.effect(
         };
       }
       const ref = CheckpointRef.make(
-        `${UNDO_REFS_PREFIX}/preview/${pathKey(loaded.context.thread.id)}`,
+        `${PREVIEW_REFS_PREFIX}/${pathKey(loaded.context.thread.id)}/${NodeCrypto.randomUUID()}`,
       );
       const cwd = engine.scope.cwd;
       yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef: ref });
