@@ -29,7 +29,6 @@ describe("long active tool groups", () => {
         runningRunId: runId,
         activeTurnStartedAt: createdAt,
         turnDiffSummaries: [],
-        supportsConversationRollback: false,
         expandedWorkGroupIds: new Set(expanded ? ["work-group:work-entry-0"] : []),
       });
       const live = rows.find((row) => row.kind === "work-live");
