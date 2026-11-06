@@ -1120,9 +1120,17 @@ function ComposerPromptEditorTiptapInner(
       editorProps: {
         attributes: editorAttributes,
         handleDOMEvents: {
-          // Composer commands keep precedence; otherwise true skips the editor's keymaps without
-          // preventDefault, so a bound app command still runs.
-          keydown: (_view, event) => {
+          keydown: (view, event) => {
+            // ProseMirror prevents every Escape it sees, even one nothing here used, and the
+            // shortcut dispatcher reads that as consumed.
+            if (event.key === "Escape" && !event.isComposing && !view.composing) {
+              if (view.someProp("handleKeyDown", (handle) => handle(view, event))) {
+                event.preventDefault();
+              }
+              return true;
+            }
+            // Composer commands keep precedence; otherwise true skips the editor's keymaps without
+            // preventDefault, so a bound app command still runs.
             if (!isRichTextFormattingShortcut(event)) return false;
             if (readCallbacks().onCommandKeyDown?.(event.key, event)) {
               event.preventDefault();
