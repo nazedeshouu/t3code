@@ -872,6 +872,7 @@ it.effect("offers a continuation for a later wake after a queued continuation is
                 interrupt: Effect.void,
                 close: Effect.void,
               }),
+            sessionHasMessage: () => Effect.succeed(true),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             subagentModel: () => Effect.succeed(null),

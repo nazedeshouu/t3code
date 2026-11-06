@@ -944,6 +944,7 @@ function replayQueryRunnerService(
   return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
     allocateSessionId: Effect.succeed(nativeSessionIdFor(transcript)),
     open: (input) => replay(() => queryRunner.open(input)),
+    sessionHasMessage: () => Effect.succeed(true),
     forkSession: (input) => replay(() => queryRunner.forkSession(input)),
     subagentLaunchToolUseId: (input) => replay(() => queryRunner.subagentLaunchToolUseId(input)),
     subagentModel: () => Effect.succeed(null),
