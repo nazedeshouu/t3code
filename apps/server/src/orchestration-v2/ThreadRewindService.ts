@@ -107,6 +107,8 @@ const RewindUndoRecord = Schema.Struct({
   scope: Schema.NullOr(OrchestrationV2CheckpointScopeJson),
   /** Null when the conversation was left alone. */
   providerThread: Schema.NullOr(OrchestrationV2ProviderThreadJson),
+  /** What the native rollback returned, so a replay never rolls an already short thread back. */
+  rolledBackTo: Schema.NullOr(OrchestrationV2ProviderThreadJson),
   runs: Schema.Array(OrchestrationV2RunJson),
   nodes: Schema.Array(OrchestrationV2ExecutionNodeJson),
   checkpoints: Schema.Array(OrchestrationV2CheckpointJson),
@@ -282,6 +284,19 @@ export const layer = Layer.effect(
       );
       yield* fileSystem.rename(partial, directory);
       return complete;
+    });
+
+    // Renamed into place, so a crash leaves the record whole.
+    const markRolledBack = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      rewindId: CommandId,
+      record: RewindUndoRecord,
+      rolledBackTo: RewindUndoRecord["rolledBackTo"],
+    ) {
+      const directory = stashDirectory(threadId, rewindId);
+      const partial = path.join(directory, `${RECORD_FILE}.partial`);
+      yield* fileSystem.writeFileString(partial, yield* encodeRecord({ ...record, rolledBackTo }));
+      yield* fileSystem.rename(partial, path.join(directory, RECORD_FILE));
     });
 
     const restoreFiles = Effect.fnUntraced(function* (
@@ -564,6 +579,7 @@ export const layer = Layer.effect(
         filesRestored: filesChanged.length,
         scope: context.scope ?? null,
         providerThread: rollsBack ? providerThread : null,
+        rolledBackTo: null,
         runs: rollsBack ? context.runsToRollback : [],
         nodes: rollsBack ? context.rootNodes : [],
         checkpoints: rollsBack ? context.staleCheckpoints : [],
@@ -587,6 +603,25 @@ export const layer = Layer.effect(
       if (!result.canRewind) {
         return yield* refuse(threadId, result.reason ?? "The code could not be restored.");
       }
+    });
+
+    const rollbackOnce = Effect.fnUntraced(function* (
+      loaded: LoadedRewind,
+      input: Parameters<ThreadRewindServiceShape["rewind"]>[0],
+      record: RewindUndoRecord,
+      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+    ) {
+      if (record.rolledBackTo !== null) {
+        return {
+          providerThread: record.rolledBackTo,
+          providerTurns: [],
+          messages: [],
+          runtimeRequests: [],
+        } satisfies ProviderAdapter.ProviderAdapterV2ThreadSnapshot;
+      }
+      const snapshot = yield* rollback.rollbackConversation({ ...loaded.rollback, session });
+      yield* markRolledBack(input.threadId, input.rewindId, record, snapshot.providerThread);
+      return snapshot;
     });
 
     const applyRewind = Effect.fnUntraced(function* (
@@ -619,7 +654,7 @@ export const layer = Layer.effect(
       const gitRestore = yield* Effect.gen(function* () {
         if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
         const snapshot = rollsBack
-          ? yield* rollback.rollbackConversation({ ...loaded.rollback, session })
+          ? yield* rollbackOnce(loaded, input, record, session)
           : undefined;
         const gitRestore = yield* Effect.exit(
           engine?.type === "git"
