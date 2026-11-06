@@ -11,6 +11,8 @@ import {
   type MessageId,
   OrchestrationV2CheckpointJson,
   OrchestrationV2CheckpointScopeJson,
+  type OrchestrationV2ContextHandoff,
+  OrchestrationV2ContextHandoffJson,
   type OrchestrationV2DomainEvent,
   OrchestrationV2ExecutionNodeJson,
   type OrchestrationV2ProviderCapabilities,
@@ -116,8 +118,10 @@ const RewindUndoRecord = Schema.Struct({
   nodes: Schema.Array(OrchestrationV2ExecutionNodeJson),
   checkpoints: Schema.Array(OrchestrationV2CheckpointJson),
   summary: Schema.NullOr(Schema.Struct({ text: Schema.String, handoffId: ContextHandoffId })),
-  /** An earlier rewind's undelivered summary this one replaced. Undo puts it back. */
-  supersededSummaryId: Schema.NullOr(ContextHandoffId),
+  /** Earlier summaries of turns after this rewind's cut. Undo puts them back. */
+  supersededSummaryIds: Schema.Array(ContextHandoffId),
+  /** Earlier summaries whose receiving run this rewind dropped, as they were. Undo puts them back. */
+  redeliveredSummaries: Schema.Array(OrchestrationV2ContextHandoffJson),
 });
 type RewindUndoRecord = typeof RewindUndoRecord.Type;
 const decodeRecord = Schema.decodeEffect(Schema.fromJsonString(RewindUndoRecord));
@@ -466,6 +470,24 @@ export const layer = Layer.effect(
       );
     });
 
+    const handoffEvent = Effect.fnUntraced(function* (
+      handoff: OrchestrationV2ContextHandoff,
+      now: DateTime.Utc,
+    ) {
+      const { threadId } = handoff;
+      return {
+        id: yield* ids.allocate.event({ threadId }),
+        type: "context-handoff.updated",
+        threadId,
+        runId: handoff.targetRunId,
+        ...(handoff.createdByProviderInstanceId === null
+          ? {}
+          : { providerInstanceId: handoff.createdByProviderInstanceId }),
+        occurredAt: now,
+        payload: { ...handoff, updatedAt: now },
+      } satisfies OrchestrationV2DomainEvent;
+    });
+
     const handoffStatusEvents = Effect.fnUntraced(function* (
       threadId: ThreadId,
       handoffId: ContextHandoffId,
@@ -476,19 +498,7 @@ export const layer = Layer.effect(
         "contextHandoffs",
       ]);
       const handoff = contextHandoffs.find((candidate) => candidate.id === handoffId);
-      if (handoff === undefined) return [];
-      const event: OrchestrationV2DomainEvent = {
-        id: yield* ids.allocate.event({ threadId }),
-        type: "context-handoff.updated",
-        threadId,
-        runId: handoff.targetRunId,
-        ...(handoff.createdByProviderInstanceId === null
-          ? {}
-          : { providerInstanceId: handoff.createdByProviderInstanceId }),
-        occurredAt: now,
-        payload: { ...handoff, status, updatedAt: now },
-      };
-      return [event];
+      return handoff === undefined ? [] : [yield* handoffEvent({ ...handoff, status }, now)];
     });
 
     const canSummarize = Effect.fnUntraced(function* (context: ProjectionThreadRewindContext) {
@@ -575,12 +585,13 @@ export const layer = Layer.effect(
       const { contextHandoffs } = yield* projections.getThreadRecords(input.threadId, [
         "contextHandoffs",
       ]);
-      const undeliveredSummary = contextHandoffs.find(
+      // A summary stands where its turns were, and the first kept run after them received it.
+      const summaries = contextHandoffs.filter(
         (handoff) =>
-          handoff.strategy === "checkpoint_summary" &&
-          handoff.status === "ready" &&
-          handoff.delivery === undefined,
+          rollsBack && handoff.strategy === "checkpoint_summary" && handoff.status === "ready",
       );
+      const cutsBefore = ({ coveredRunOrdinals }: OrchestrationV2ContextHandoff) =>
+        context.targetRun.ordinal < coveredRunOrdinals.from;
       let filesChanged: ReadonlyArray<string> = [];
       if (engine?.type === "provider") {
         filesChanged = (yield* providerDryRun(loaded, engine, yield* session)).filesChanged;
@@ -594,7 +605,13 @@ export const layer = Layer.effect(
         nodes: rollsBack ? context.rootNodes : [],
         checkpoints: rollsBack ? context.staleCheckpoints : [],
         summary,
-        supersededSummaryId: rollsBack ? (undeliveredSummary?.id ?? null) : null,
+        supersededSummaryIds: summaries.filter(cutsBefore).map((handoff) => handoff.id),
+        redeliveredSummaries: summaries.filter(
+          (handoff) =>
+            !cutsBefore(handoff) &&
+            handoff.delivery !== undefined &&
+            context.targetOrdinal <= handoff.coveredRunOrdinals.to,
+        ),
       });
     });
 
@@ -705,15 +722,13 @@ export const layer = Layer.effect(
           if (snapshot !== undefined) {
             events.push(...(yield* rollback.rollbackEvents({ ...loaded.rollback, snapshot })));
           }
-          if (snapshot !== undefined && record.supersededSummaryId !== null) {
-            events.push(
-              ...(yield* handoffStatusEvents(
-                threadId,
-                record.supersededSummaryId,
-                "superseded",
-                now,
-              )),
-            );
+          if (snapshot !== undefined) {
+            for (const handoffId of record.supersededSummaryIds) {
+              events.push(...(yield* handoffStatusEvents(threadId, handoffId, "superseded", now)));
+            }
+            for (const handoff of record.redeliveredSummaries) {
+              events.push(yield* handoffEvent({ ...handoff, delivery: undefined }, now));
+            }
           }
           if (snapshot !== undefined && record.summary !== null) {
             const ordinals = context.runsToRollback.map((run) => run.ordinal);
@@ -875,10 +890,11 @@ export const layer = Layer.effect(
               )),
             );
           }
-          if (record.supersededSummaryId !== null) {
-            events.push(
-              ...(yield* handoffStatusEvents(threadId, record.supersededSummaryId, "ready", now)),
-            );
+          for (const handoffId of record.supersededSummaryIds) {
+            events.push(...(yield* handoffStatusEvents(threadId, handoffId, "ready", now)));
+          }
+          for (const handoff of record.redeliveredSummaries) {
+            events.push(yield* handoffEvent(handoff, now));
           }
           yield* eventSink.write({ events });
         }),
