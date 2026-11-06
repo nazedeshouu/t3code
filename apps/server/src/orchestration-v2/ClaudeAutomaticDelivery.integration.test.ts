@@ -178,6 +178,7 @@ it.effect.each(deliveries)(
                 interrupt: Effect.die("automatic delivery must never interrupt"),
                 close: Effect.void,
               }),
+            sessionHasMessage: () => Effect.succeed(true),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             assertComplete: Effect.void,

@@ -670,6 +670,13 @@ export class ClaudeSettingsLaunchArgError extends Schema.TaggedError<ClaudeSetti
   }
 }
 
+export interface ClaudeAgentSdkSessionMessageLookupInput {
+  readonly sessionId: string;
+  readonly messageId: string;
+  readonly dir: string | null;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
 export interface ClaudeAgentSdkQueryRunnerShape {
   readonly allocateSessionId: Effect.Effect<string, ClaudeAgentSdkQueryRunnerError>;
   readonly open: (
@@ -681,6 +688,9 @@ export interface ClaudeAgentSdkQueryRunnerShape {
     ForkSessionResult & { readonly headMessageId?: string },
     ClaudeAgentSdkQueryRunnerError
   >;
+  readonly sessionHasMessage: (
+    input: ClaudeAgentSdkSessionMessageLookupInput,
+  ) => Effect.Effect<boolean, ClaudeAgentSdkQueryRunnerError>;
   readonly subagentLaunchToolUseId: (
     input: ClaudeAgentSdkSubagentLookupInput,
   ) => Effect.Effect<string | null, ClaudeAgentSdkQueryRunnerError>;
@@ -1092,6 +1102,9 @@ function makeClaudeAgentSdkProtocolLogger(input: {
 }
 
 const encodeClaudeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeClaudeHistoryMessages = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ uuid: Schema.String }))),
+);
 const decodeClaudeHistoryFork = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({ sessionId: Schema.String, headMessageId: Schema.optionalKey(Schema.String) }),
@@ -1107,9 +1120,9 @@ const claudeConfigDirOf = (
 // The SDK reads CLAUDE_CONFIG_DIR from process.env. Isolate custom homes in a
 // worker so concurrent providers keep the server's environment.
 const runClaudeWorker = Effect.fn("runClaudeWorker")(function* (input: {
-  readonly method: "forkSession";
+  readonly method: "forkSession" | "getSessionMessages";
   readonly sessionId: string;
-  readonly options?: ForkSessionOptions;
+  readonly options?: ForkSessionOptions & { readonly includeSystemMessages?: boolean };
   readonly environment: NodeJS.ProcessEnv;
 }) {
   const path = yield* Path.Path;
@@ -1637,6 +1650,36 @@ export const layerQueryRunner: Layer.Layer<
           : result.headMessageId;
         return headMessageId === undefined ? result : { ...result, headMessageId };
       }),
+      sessionHasMessage: Effect.fn("ClaudeAgentSdkQueryRunner.sessionHasMessage")(
+        function* (input) {
+          const hostEnvironment = yield* HostProcess.Environment;
+          const homeDirectory = yield* HostProcess.HomeDirectory;
+          const options = {
+            ...(input.dir === null ? {} : { dir: input.dir }),
+            includeSystemMessages: true,
+          };
+          const uuids: ReadonlyArray<string> =
+            claudeConfigDirOf(path, input.environment, homeDirectory) ===
+            claudeConfigDirOf(path, hostEnvironment, homeDirectory)
+              ? yield* Effect.tryPromise({
+                  try: () => getSessionMessages(input.sessionId, options),
+                  catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
+                }).pipe(Effect.map((messages) => messages.map((message) => message.uuid)))
+              : yield* runClaudeWorker({
+                  method: "getSessionMessages",
+                  sessionId: input.sessionId,
+                  options,
+                  environment: input.environment,
+                }).pipe(
+                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                  Effect.provideService(Path.Path, path),
+                  Effect.flatMap(decodeClaudeHistoryMessages),
+                  Effect.mapError((cause) => queryRunnerError(cause, "getSessionMessages")),
+                  Effect.map((messages) => messages.map((message) => message.uuid)),
+                );
+          return uuids.length === 0 || uuids.includes(input.messageId);
+        },
+      ),
       subagentLaunchToolUseId: Effect.fn("ClaudeAgentSdkQueryRunner.subagentLaunchToolUseId")(
         function* (input: ClaudeAgentSdkSubagentLookupInput) {
           const protocolLogger = makeClaudeAgentSdkProtocolLogger({
@@ -12330,6 +12373,53 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
               const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
+
+              // Compaction ends the chain Claude resumes, so an older cut needs its own session.
+              // The source session stays intact, which keeps undo lossless.
+              const dir = input.runtimePolicy.cwd;
+              const resumable =
+                resumeSessionAt === null ||
+                (yield* queryRunner
+                  .sessionHasMessage({
+                    sessionId: nativeThreadId,
+                    messageId: resumeSessionAt,
+                    dir,
+                    environment: adapterOptions.environment,
+                  })
+                  .pipe(Effect.orElseSucceed(() => true)));
+              if (!resumable && resumeSessionAt !== null) {
+                const forked = yield* queryRunner.forkSession({
+                  sessionId: nativeThreadId,
+                  options: {
+                    ...(dir === null ? {} : { dir }),
+                    upToMessageId: resumeSessionAt,
+                  },
+                  environment: adapterOptions.environment,
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                });
+                yield* Ref.update(openedNativeThreads, (current) =>
+                  new Set(current).add(forked.sessionId),
+                );
+                return {
+                  providerThread: {
+                    ...rollbackInput.providerThread,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadRef: {
+                      driver: CLAUDE_PROVIDER,
+                      nativeId: forked.sessionId,
+                      strength: "strong" as const,
+                    },
+                    nativeConversationHeadRef: null,
+                    status: "idle" as const,
+                    lastRunOrdinal: rollbackInput.target.appRunOrdinal,
+                    updatedAt: now,
+                  },
+                  providerTurns: [],
+                  messages: [],
+                  runtimeRequests: [],
+                };
+              }
 
               if (rollbackInput.target.type === "thread_start" && resumeSessionAt === null) {
                 const resetNativeThreadId = yield* queryRunner.allocateSessionId;
