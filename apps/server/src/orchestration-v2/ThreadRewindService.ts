@@ -80,15 +80,18 @@ const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't 
 const EARLIER_SESSION = "This turn's file checkpoints stayed with an earlier provider session.";
 const NO_CONVERSATION = "This thread has no provider conversation to rewind.";
 const CODE_NOT_RESTORED = "The conversation was rewound, but the code could not be restored.";
+const ROLLBACK_NOT_RECORDED =
+  "The conversation was rewound, but this thread could not be updated to show it. Rewinding again may remove more turns.";
 /** Recorded for a path holding anything but a regular file. It never matches at undo. */
 const NOT_A_FILE = "not-a-file";
 
-/** A refusal or failure the user sees through `rollbackFailure`. Retrying it would not help. */
+/** A refusal or failure the user sees through `rollbackFailure`. Only `retryable` ones are replayed. */
 export class ThreadRewindError extends Schema.TaggedError<ThreadRewindError>()(
   "ThreadRewindError",
   {
     threadId: Schema.String,
     detail: Schema.String,
+    retryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -248,11 +251,12 @@ export const layer = Layer.effect(
     const textGeneration = yield* TextGeneration.TextGeneration;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
-    const refuse = (threadId: ThreadId, detail: string, cause?: unknown) =>
+    const refuse = (threadId: ThreadId, detail: string, cause?: unknown, retryable?: boolean) =>
       new ThreadRewindError({
         threadId,
         detail,
         ...(cause === undefined ? {} : { cause }),
+        ...(retryable === undefined ? {} : { retryable }),
       });
 
     /** Maps anything unexpected to `detail`, keeping the specific reasons it already carries. */
@@ -792,11 +796,12 @@ export const layer = Layer.effect(
       // The conversation stays untouched unless the provider's files are safely back, and a later
       // failure puts them back. A native rollback can't be taken back and git keeps no copy of the
       // files, so git restores last and its failure is reported once the rollback is on record.
-      if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
-      const record =
-        engine?.type === "provider"
-          ? yield* recordRestoredFiles(threadId, rewindId, stashed)
-          : stashed;
+      // A rollback on record means the files were already restored.
+      const restoresFiles = engine?.type === "provider" && stashed.rolledBackTo === null;
+      if (restoresFiles) yield* restoreCode(loaded, engine, session);
+      const record = restoresFiles
+        ? yield* recordRestoredFiles(threadId, rewindId, stashed)
+        : stashed;
       const snapshot = rollsBack ? yield* rollbackOnce(loaded, input, record, session) : undefined;
       const gitRestore = yield* Effect.exit(
         engine?.type === "git"
@@ -899,6 +904,17 @@ export const layer = Layer.effect(
           Effect.logWarning("Failed to put a rewind back", { threadId, rewindId, cause }),
         ),
       );
+
+    // A native rollback can't be taken back, so its marker stays for a replay to finish from.
+    const rollbackUnrecorded = Effect.fn("ThreadRewindService.rollbackUnrecorded")(
+      function* (threadId: ThreadId, rewindId: CommandId) {
+        const record = yield* readRecord(threadId, rewindId);
+        if (Option.isNone(record) || record.value.rolledBackTo === null) return false;
+        const thread = yield* Effect.option(projections.getThread(threadId));
+        return !Option.exists(thread, ({ lastRewindId }) => lastRewindId === rewindId);
+      },
+      (effect) => effect.pipe(Effect.orElseSucceed(() => false)),
+    );
 
     const applyUndo = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
@@ -1050,7 +1066,17 @@ export const layer = Layer.effect(
         }
         yield* onThreadWorkspace(
           thread,
-          applyRewind(input).pipe(Effect.tapError(() => putBack(input.threadId, input.rewindId))),
+          applyRewind(input).pipe(
+            Effect.tapError((cause) =>
+              rollbackUnrecorded(input.threadId, input.rewindId).pipe(
+                Effect.flatMap((unrecorded) =>
+                  unrecorded
+                    ? Effect.fail(refuse(input.threadId, ROLLBACK_NOT_RECORDED, cause, true))
+                    : putBack(input.threadId, input.rewindId),
+                ),
+              ),
+            ),
+          ),
         );
       },
       (effect, input) => effect.pipe(failWith(input.threadId, REWIND_FAILED)),

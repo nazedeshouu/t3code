@@ -299,6 +299,51 @@ it.effect.each([
   }),
 );
 
+it.effect("retries a rewind that can still finish, and records it once out of retries", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const dispatched: Array<unknown> = [];
+    const layer = layerExecutorFor({
+      events,
+      threads: {
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command);
+            return { sequence: 1, storedEvents: [] };
+          }),
+      },
+      rewind: {
+        rewind: () =>
+          Effect.fail(
+            new ThreadRewindService.ThreadRewindError({
+              threadId,
+              detail: "Not recorded yet.",
+              retryable: true,
+            }),
+          ),
+      },
+    });
+    const now = yield* DateTime.now;
+    const effect = {
+      ...restartEffect(now, { type: "detach" }),
+      request: {
+        type: "thread.rewind" as const,
+        messageId: MessageId.make("message:rewind"),
+        mode: "code" as const,
+      },
+    };
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const retried = yield* Effect.exit(executor.execute(effect, { willRetry: true }));
+      assert.equal(retried._tag, "Failure");
+      assert.deepEqual(dispatched, []);
+
+      yield* executor.execute(effect, { willRetry: false });
+    }).pipe(Effect.provide(layer));
+    assert.equal(dispatched.length, 1);
+  }),
+);
+
 it.effect("records a rewind refusal once and ends the effect", () =>
   Effect.gen(function* () {
     const events = yield* Ref.make<ReadonlyArray<string>>([]);

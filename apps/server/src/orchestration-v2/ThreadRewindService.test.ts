@@ -757,6 +757,33 @@ it.effect("putting files back replaces a link at the path instead of following i
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
+it.effect("a projection write that fails after the rollback replays without rolling back", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    fake.eventWrite.mockImplementationOnce(() => Effect.fail(new Error("database is locked")));
+
+    const error = yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
+
+    assert.isTrue(error.retryable);
+    assert.notInclude(error.detail, "Nothing was changed");
+    assert.equal(yield* fileSystem.readFileString(file), "restored");
+    assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+
+    yield* service.rewind(rewindInput("code_and_conversation"));
+
+    assert.equal(fake.rollbackThread.mock.calls.length, 1);
+    assert.deepEqual(yield* runStatuses, ["completed", "rolled_back", "rolled_back"]);
+    yield* service.undo({ threadId, rewindId: undoId });
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+    assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
 it.effect("undo brings back a removed managed worktree before restoring into it", () => {
   const fake = makeFake({});
   return Effect.gen(function* () {

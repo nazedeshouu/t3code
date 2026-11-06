@@ -208,7 +208,10 @@ export const layerExecutor: Layer.Layer<
                   })
             ).pipe(
               // Refusals are deterministic, so they end the effect instead of retrying it.
-              Effect.catch((error) => recordRollbackFailure(effect, error.detail)),
+              Effect.catchIf(
+                (error) => error.retryable !== true || !willRetry,
+                (error) => recordRollbackFailure(effect, error.detail),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
