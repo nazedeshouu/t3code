@@ -89,7 +89,9 @@ interface Fake {
   readonly generateThreadSummary: ReturnType<
     typeof vi.fn<TextGeneration.TextGeneration["Service"]["generateThreadSummary"]>
   >;
-  readonly eventWrite: ReturnType<typeof vi.fn<() => Effect.Effect<void, Error>>>;
+  readonly eventWrite: ReturnType<
+    typeof vi.fn<() => Effect.Effect<void, EventSink.EventSinkWriteError>>
+  >;
   readonly createWorktree: ReturnType<typeof vi.fn<(path: string) => void>>;
 }
 type ProviderRewindFiles = NonNullable<
@@ -201,13 +203,7 @@ const makeLayer = (
     Effect.map(EventSink.EventSinkV2, (sink) => ({
       ...sink,
       write: (input: Parameters<typeof sink.write>[0]) =>
-        fake.eventWrite().pipe(
-          Effect.mapError(
-            (cause) =>
-              new EventSink.EventSinkWriteError({ eventCount: input.events.length, cause }),
-          ),
-          Effect.andThen(sink.write(input)),
-        ),
+        fake.eventWrite().pipe(Effect.andThen(sink.write(input))),
     })),
   );
   return ThreadRewindService.layer.pipe(
@@ -584,6 +580,7 @@ it.effect("a replay refused after the first try restored files puts them back", 
 });
 
 const CHANGED = "a.ts changed after the rewind, so Undo would overwrite it.";
+const LOCKED = new EventSink.EventSinkWriteError({ eventCount: 1, cause: "database is locked" });
 
 it.effect("undo refuses a file edited after the rewind, then works once it is put back", () => {
   const fake = makeFake({});
@@ -617,7 +614,7 @@ it.effect("an undo replayed after its files went back still finishes", () => {
     yield* seed({ runs: 3, cwd });
     const service = yield* ThreadRewindService.ThreadRewindService;
     yield* service.rewind(rewindInput("code_and_conversation"));
-    fake.eventWrite.mockImplementationOnce(() => Effect.fail(new Error("database is locked")));
+    fake.eventWrite.mockImplementationOnce(() => Effect.fail(LOCKED));
 
     yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
     assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
@@ -655,11 +652,11 @@ it.effect("one changed file refuses the whole undo before any other file is touc
     fake.rewindFiles.mockImplementation((request) =>
       Effect.gen(function* () {
         if (!request.dryRun) {
-          yield* fileSystem.writeFileString(file, "restored").pipe(Effect.orDie);
-          yield* fileSystem.writeFileString(second, "restored b").pipe(Effect.orDie);
+          yield* fileSystem.writeFileString(file, "restored");
+          yield* fileSystem.writeFileString(second, "restored b");
         }
         return { canRewind: true, filesChanged: [file, second], insertions: 2, deletions: 2 };
-      }),
+      }).pipe(Effect.orDie),
     );
     yield* seed({ runs: 3, cwd });
     const service = yield* ThreadRewindService.ThreadRewindService;
@@ -732,11 +729,11 @@ it.effect("putting files back replaces a link at the path instead of following i
     fake.rewindFiles.mockImplementation((request) =>
       Effect.gen(function* () {
         if (!request.dryRun) {
-          yield* fileSystem.remove(file).pipe(Effect.orDie);
-          yield* fileSystem.symlink(victim, file).pipe(Effect.orDie);
+          yield* fileSystem.remove(file);
+          yield* fileSystem.symlink(victim, file);
         }
         return { canRewind: true, filesChanged: [file], insertions: 1, deletions: 1 };
-      }),
+      }).pipe(Effect.orDie),
     );
     yield* seed({ runs: 3, cwd });
     fake.rollbackThread.mockImplementationOnce(() =>
@@ -765,7 +762,7 @@ it.effect("a projection write that fails after the rollback replays without roll
     fake.rewindFiles.mockImplementation(local.rewindFiles);
     yield* seed({ runs: 3, cwd });
     const service = yield* ThreadRewindService.ThreadRewindService;
-    fake.eventWrite.mockImplementationOnce(() => Effect.fail(new Error("database is locked")));
+    fake.eventWrite.mockImplementationOnce(() => Effect.fail(LOCKED));
 
     const error = yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
 
