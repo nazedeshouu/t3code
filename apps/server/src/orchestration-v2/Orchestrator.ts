@@ -1138,6 +1138,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
+  const layerScope = yield* Effect.scope;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
       Partial<Pick<OrchestrationV2ThreadProjection, "turnItems">>,
@@ -1889,6 +1890,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const startQueueAfterRewind = (threadId: ThreadId, effectId: string): Effect.Effect<void> =>
+    effectOutbox.awaitSettled(effectId).pipe(
+      Effect.andThen(threadDispatch.withLock(threadId, startNextQueuedRun(threadId))),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to start the queue after a rewind", { threadId, cause }),
+      ),
+      Effect.forkIn(layerScope),
+      Effect.asVoid,
+    );
+
   const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
@@ -1899,6 +1910,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     ) {
       if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      // A run binds its provider thread here, so one started now resumes what the rewind is cutting.
+      const rewindEffectId = yield* effectOutbox.pendingRewindEffectId(threadId);
+      if (Option.isSome(rewindEffectId)) {
+        return yield* startQueueAfterRewind(threadId, rewindEffectId.value);
+      }
       const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
@@ -2055,7 +2071,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A run queued before a fresh run started is bound to the conversation that run left behind.
       const followsLatestContext =
         !freshContext &&
-        (followsCurrent || providerThreadPredatesBoundary(storedProviderThread, contextBoundary));
+        (followsCurrent ||
+          providerThreadPredatesBoundary(storedProviderThread, contextBoundary) ||
+          // A rewind to the thread start replaces the row, and the old one resumes what it cut.
+          (activeProviderThread !== undefined &&
+            activeProviderThread.id !== storedProviderThread.id &&
+            activeProviderThread.providerInstanceId === storedProviderThread.providerInstanceId));
       const targetProviderThread = followsLatestContext
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId &&
           !providerThreadPredatesBoundary(activeProviderThread, contextBoundary)
@@ -6365,7 +6386,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode.type === "defer_start" ||
       dispatchMode.type === "start_immediately" ||
       dispatchMode.type === "queue_after_active";
-    const shouldQueue = queueBehindRun !== undefined && startsOrQueuesRun;
+    // Client messages resume held queues; server continuations and scheduled tasks do not.
+    // Provider failure or usage limits re-hold the queue.
+    const worktreeSetupUnresolved = worktreeSetupPending(projection);
+    const sentByUserFromClient =
+      command.createdBy === "user" &&
+      (command.creationSource === "web" || command.creationSource === "mobile") &&
+      command.scheduledTaskId === undefined;
+    const rewindEffectId = startsOrQueuesRun
+      ? yield* effectOutbox.pendingRewindEffectId(command.threadId).pipe(mapDispatchError(command))
+      : Option.none<string>();
+    // A person can send again; an automatic wake would be lost, so it waits in the queue instead.
+    if (
+      Option.isSome(rewindEffectId) &&
+      (sentByUserFromClient || dispatchMode.type !== "queue_after_active")
+    ) {
+      return yield* rewindingError(command);
+    }
+    const shouldQueue =
+      (queueBehindRun !== undefined || Option.isSome(rewindEffectId)) && startsOrQueuesRun;
     // An explicit pick queued ahead reaches the thread only when its run starts. A goal
     // command that stops the active run goes first, so nothing queued applies before it.
     // Buffered provider wakes drain output their own provider already produced.
@@ -6380,13 +6419,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection = queueTailModelSelection(projection);
     }
     yield* ensureGoalCommandSupported(command, command, modelSelection.instanceId);
-    // Client messages resume held queues; server continuations and scheduled tasks do not.
-    // Provider failure or usage limits re-hold the queue.
-    const worktreeSetupUnresolved = worktreeSetupPending(projection);
-    const sentByUserFromClient =
-      command.createdBy === "user" &&
-      (command.creationSource === "web" || command.creationSource === "mobile") &&
-      command.scheduledTaskId === undefined;
     const heldRunsToRelease =
       sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
         ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
@@ -6416,13 +6448,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queueProviderThread =
         activeProviderThread ??
         projection.providerThreads.find(
-          (candidate) => candidate.id === queueBehindRun.providerThreadId,
+          (candidate) => candidate.id === queueBehindRun?.providerThreadId,
         );
       if (queueProviderThread === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Active run ${queueBehindRun.id} has no provider thread for queued dispatch.`,
+          cause: `Active run ${queueBehindRun?.id} has no provider thread for queued dispatch.`,
         });
       }
       const now = yield* DateTime.now;
@@ -6477,7 +6509,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
       const rootNodeId = idAllocator.derive.rootNode({ runId });
       const checkpointScope =
-        queueBehindRun.status === "preparing" || worktreeMissingRun !== undefined
+        queueBehindRun?.status === "preparing" || worktreeMissingRun !== undefined
           ? null
           : yield* runtimePolicy.resolve({ thread: projection.thread, modelSelection }).pipe(
               Effect.flatMap((resolvedRuntimePolicy) =>
@@ -6527,7 +6559,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeAttemptId: attemptId,
         status: "queued",
         ...(worktreeMissingRun !== undefined ||
-        (heldRunsToRelease.length === 0 && queueIsHeld && !wakeSkipsHold)
+        (queueBehindRun !== undefined &&
+          heldRunsToRelease.length === 0 &&
+          queueIsHeld &&
+          !wakeSkipsHold)
           ? { queueHeld: true }
           : {}),
         queuePosition:
@@ -6700,6 +6735,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           reason: "Stopped to apply /goal",
           now,
         });
+      }
+      if (Option.isSome(rewindEffectId)) {
+        yield* startQueueAfterRewind(command.threadId, rewindEffectId.value);
       }
       return;
     }
@@ -13558,6 +13596,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return parentRunId;
   });
 
+  // A send admitted now would start on the provider thread the rewind is about to replace.
+  const rewindingError = (command: Pick<OrchestrationV2ServerCommand, "commandId" | "type">) =>
+    new OrchestratorDispatchError({
+      commandId: command.commandId,
+      commandType: command.type,
+      cause: "This thread is rewinding. Try again when it finishes.",
+    });
+
   const dispatchUnsupported = (command: OrchestrationV2ServerCommand) =>
     Effect.fail(
       new OrchestratorDispatchError({
@@ -13566,18 +13612,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
-  // A send admitted now would start on the provider thread the rewind is about to replace.
   const rejectDuringRewind = Effect.fn("Orchestrator.rejectDuringRewind")(function* (
     command: OrchestrationV2ServerCommand,
     threadId: ThreadId,
   ) {
-    if (yield* effectOutbox.hasPendingRewind(threadId).pipe(mapDispatchError(command))) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: "This thread is rewinding. Try again when it finishes.",
-      });
-    }
+    const rewindEffectId = yield* effectOutbox
+      .pendingRewindEffectId(threadId)
+      .pipe(mapDispatchError(command));
+    if (Option.isSome(rewindEffectId)) return yield* rewindingError(command);
   });
 
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
@@ -13600,11 +13642,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.command_type": command.type,
       "orchestration_v2.thread_id": commandThreadId(command),
     });
-    if (
-      command.type === "message.dispatch" ||
-      command.type === "provider.switch" ||
-      command.type === "thread.model-selection.set"
-    ) {
+    // Sends meet the same gate in `dispatchMessage`, where every way into a run passes.
+    if (command.type === "provider.switch" || command.type === "thread.model-selection.set") {
       yield* rejectDuringRewind(command, command.threadId);
     }
 

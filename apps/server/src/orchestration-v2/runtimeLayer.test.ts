@@ -1090,6 +1090,175 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  const seedIdleThreadDuringRewind = (name: string) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const { threadId } = yield* seedFailingRollbackThread(name);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${name}-queued`),
+        threadId,
+        messageId: MessageId.make(`${name}-queued`),
+        text: "Queued behind the first turn.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const seeded = yield* orchestrator.getThreadProjection(threadId);
+      const [first, queued] = seeded.runs;
+      const now = yield* DateTime.now;
+      // A stopped thread keeps its queue held, which is how a queue outlives its active run.
+      yield* eventSink.write({
+        commandId: CommandId.make(`${name}-stopped`),
+        events: [
+          {
+            id: EventId.make(`${name}-held`),
+            type: "run.updated",
+            threadId,
+            runId: queued!.id,
+            occurredAt: now,
+            payload: { ...queued!, queueHeld: true },
+          },
+          {
+            id: EventId.make(`${name}-first-done`),
+            type: "run.updated",
+            threadId,
+            runId: first!.id,
+            occurredAt: now,
+            payload: { ...first!, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      const rewindId = CommandId.make(`${name}-rewind`);
+      yield* outbox.enqueue([
+        {
+          id: rewindId,
+          commandId: rewindId,
+          threadId,
+          request: { type: "thread.rewind", messageId: first!.userMessageId, mode: "conversation" },
+        },
+      ]);
+      const settleRewind = outbox
+        .cancelUnsettled({ threadId, effectTypes: ["thread.rewind"], reason: "settled" })
+        .pipe(Effect.flatMap(outbox.signalCancellations));
+      const started = eventSink
+        .stream({ afterSequence: yield* eventSink.latestSequence(), eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+        );
+      return { threadId, queued: queued!, settleRewind, started };
+    });
+
+  it.effect("a queue resumed during a rewind starts after it, on the rewound conversation", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const { threadId, queued, settleRewind, started } = yield* seedIdleThreadDuringRewind(
+        "runtime-rewind-queue-resume",
+      );
+      const waiting = yield* Effect.forkChild(started);
+
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make("runtime-rewind-queue-resume-resume"),
+        threadId,
+      });
+      yield* orchestrator.dispatch({
+        type: "queued-run.start",
+        commandId: CommandId.make("runtime-rewind-queue-resume-send-now"),
+        threadId,
+        runId: queued.id,
+      });
+      const during = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(during.runs.find((run) => run.id === queued.id)?.status, "queued");
+
+      // A rewind to the thread start leaves a new row as the active provider thread.
+      const [oldProviderThread] = during.providerThreads;
+      const rewoundProviderThreadId = ProviderThreadId.make("runtime-rewind-queue-resume-rewound");
+      const nativeThreadRef = {
+        driver: oldProviderThread!.driver,
+        nativeId: "rewound",
+        strength: "strong" as const,
+      };
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-rewind-queue-resume-rolled-back"),
+        events: [
+          {
+            id: EventId.make("runtime-rewind-queue-resume-rolled-back"),
+            type: "provider-thread.updated",
+            threadId,
+            driver: oldProviderThread!.driver,
+            providerInstanceId: oldProviderThread!.providerInstanceId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...oldProviderThread!, id: rewoundProviderThreadId, nativeThreadRef },
+          },
+        ],
+      });
+      yield* settleRewind;
+      yield* Fiber.join(waiting);
+
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      const run = after.runs.find((candidate) => candidate.id === queued.id);
+      assert.equal(run?.status, "starting");
+      assert.equal(run?.providerThreadId, rewoundProviderThreadId);
+    }),
+  );
+
+  it.effect("a pull request wake during a rewind queues, and starts after it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const { threadId, queued, settleRewind, started } =
+        yield* seedIdleThreadDuringRewind("runtime-rewind-pr-wake");
+      const key = { host: "github.com", repository: "pingdotgg/t3code", number: 7 };
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("runtime-rewind-pr-wake-watch"),
+        threadId,
+        ...key,
+        watching: true,
+        link: { url: "https://github.com/pingdotgg/t3code/pull/7", source: "agent" },
+      });
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      const watch = shell?.pullRequests?.[0]?.watch;
+      assert.isDefined(watch);
+      if (watch === undefined) return;
+      const waiting = yield* Effect.forkChild(started);
+
+      const wakeMessageId = MessageId.make("runtime-rewind-pr-wake-notice");
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request-watch.sync",
+        commandId: CommandId.make("runtime-rewind-pr-wake-sync"),
+        threadId,
+        ...key,
+        startedAt: watch.startedAt,
+        watch: { ...watch, wakes: 1 },
+        wake: {
+          messageId: wakeMessageId,
+          text: "Update",
+          notification: { source: { kind: "monitor" }, outcome: "updated", summary: "#7" },
+        },
+      });
+      const during = yield* orchestrator.getThreadProjection(threadId);
+      const wakeRun = during.runs.find((run) => run.userMessageId === wakeMessageId);
+      assert.equal(wakeRun?.status, "queued");
+      assert.isUndefined(wakeRun?.queueHeld);
+
+      yield* settleRewind;
+      yield* Fiber.join(waiting);
+
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((run) => run.id === wakeRun?.id)?.status, "starting");
+      assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "queued");
+    }),
+  );
+
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
