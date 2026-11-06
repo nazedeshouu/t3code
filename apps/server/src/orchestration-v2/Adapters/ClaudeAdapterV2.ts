@@ -62,6 +62,7 @@ import {
   type SDKAPIRetryMessage,
   type SDKMessage,
   type SDKRateLimitInfo,
+  type RewindFilesResult,
   type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -109,6 +110,7 @@ import {
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
+  type ThreadRewindCodeStats,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2UserInputQuestion,
   type OrchestrationV2Subagent,
@@ -480,6 +482,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     providerCanRollbackConversation: true,
     providerRollbackReturnsSnapshot: true,
     providerCanReadConversationSnapshot: false,
+    providerCanRewindFiles: true,
   },
   identity: {
     nativeThreadIds: "strong",
@@ -583,6 +586,10 @@ export interface ClaudeAgentSdkQuerySession {
     ReadonlyArray<ClaudePermissionRule>,
     ClaudeAgentSdkQueryRunnerError
   >;
+  readonly rewindFiles: (
+    promptUuid: string,
+    options: { readonly dryRun: boolean },
+  ) => Effect.Effect<RewindFilesResult, ClaudeAgentSdkQueryRunnerError>;
   readonly interrupt: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
   readonly close: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
@@ -705,6 +712,9 @@ const isClaudeAgentSdkQueryRunnerError = Schema.is(ClaudeAgentSdkQueryRunnerErro
 const isClaudeMcpRegistrationTimeoutError = Schema.is(ClaudeMcpRegistrationTimeoutError);
 const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
+);
+const isProviderAdapterRewindFilesError = Schema.is(
+  ProviderAdapter.ProviderAdapterRewindFilesError,
 );
 const isProviderAdapterRollbackThreadError = Schema.is(
   ProviderAdapter.ProviderAdapterRollbackThreadError,
@@ -893,6 +903,7 @@ export interface ClaudeAgentSdkLoggedQueryOptions {
   readonly sessionId?: string;
   readonly resume?: string;
   readonly resumeSessionAt?: ClaudeAgentSdkQueryOptions["resumeSessionAt"];
+  readonly resumeDropsTurn?: ClaudeAgentSdkQueryOptions["resumeDropsTurn"];
   readonly cwd?: ClaudeAgentSdkQueryOptions["cwd"];
   readonly allowedTools?: ClaudeAgentSdkQueryOptions["allowedTools"];
   readonly disallowedTools?: ClaudeAgentSdkQueryOptions["disallowedTools"];
@@ -1032,6 +1043,7 @@ export function loggedClaudeQueryOptions(
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     ...(options.resume === undefined ? {} : { resume: options.resume }),
     ...(options.resumeSessionAt === undefined ? {} : { resumeSessionAt: options.resumeSessionAt }),
+    ...(options.resumeDropsTurn === undefined ? {} : { resumeDropsTurn: options.resumeDropsTurn }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
     ...(options.disallowedTools === undefined ? {} : { disallowedTools: options.disallowedTools }),
@@ -1411,6 +1423,11 @@ export const layerQueryRunner: Layer.Layer<
                   }),
                 ),
               ),
+            rewindFiles: (promptUuid, rewindOptions) =>
+              Effect.tryPromise({
+                try: () => queryRuntime.rewindFiles(promptUuid, rewindOptions),
+                catch: (cause) => queryRunnerError(cause, "rewindFiles"),
+              }),
             setModel: (model) =>
               Effect.tryPromise({
                 try: () => queryRuntime.setModel(model),
@@ -1757,6 +1774,7 @@ export function makeClaudeQueryOptions(input: {
   readonly title?: string;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
+  readonly resumeDropsTurn?: string;
   readonly cwd: string | null;
   readonly attachmentsDir?: string;
   readonly settings?: ClaudeSettings;
@@ -1852,7 +1870,9 @@ export function makeClaudeQueryOptions(input: {
           effort: compiledSelection.effort as NonNullable<ClaudeQueryOptions["effort"]>,
         }),
     ...threadIdentity,
+    enableFileCheckpointing: true,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
+    ...(input.resumeDropsTurn === undefined ? {} : { resumeDropsTurn: input.resumeDropsTurn }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
@@ -2360,6 +2380,45 @@ const resolveClaudeRollbackResumeSessionAt = Effect.fn(
     }
   }
 });
+
+/**
+ * `resumeDropsTurn` declares a single turn and refuses anything else past the cut, including a
+ * second turn or an interrupted kept turn's tool results, so arm it only for that exact shape.
+ */
+const claudeRollbackDropsPrompt = (
+  input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput,
+): string | undefined => {
+  if (input.providerThread.nativeConversationHeadRef !== null) return undefined;
+  const kept = input.target.type === "provider_turn" ? input.target.providerTurn : undefined;
+  if (kept !== undefined && kept.status !== "completed") return undefined;
+  const dropped = input.providerThreadTurns.filter((turn) => turn.ordinal > (kept?.ordinal ?? 0));
+  return dropped.length === 1 ? dropped[0]?.nativePromptRef : undefined;
+};
+
+const withoutClaudeConversationHead = (
+  providerThread: OrchestrationV2ProviderThread,
+): Pick<OrchestrationV2ProviderThread, "nativeConversationHeadRef" | "nativeMetadata"> => {
+  const { conversationHeadDropsPrompt: _dropped, ...nativeMetadata } =
+    providerThread.nativeMetadata ?? {};
+  return {
+    nativeConversationHeadRef: null,
+    nativeMetadata: providerThread.nativeMetadata == null ? null : nativeMetadata,
+  };
+};
+
+/** `rewindFiles` counts lines from the restore's side, which mirrors what the turn did. */
+const claudeTurnCodeStats = (
+  result: RewindFilesResult,
+  relativeTo: (filePath: string) => string,
+): ThreadRewindCodeStats => {
+  const paths = result.filesChanged ?? [];
+  return {
+    filesChanged: paths.length,
+    insertions: result.deletions ?? 0,
+    deletions: result.insertions ?? 0,
+    primaryPath: paths.length === 1 && paths[0] !== undefined ? relativeTo(paths[0]) : null,
+  };
+};
 
 type ClaudeUserContent = SDKUserMessage["message"]["content"];
 type ClaudeUserContentBlock = Exclude<ClaudeUserContent, string>[number];
@@ -3902,6 +3961,9 @@ const awaitClaudeUserInputAnswers = Effect.fn("awaitClaudeUserInputAnswers")(fun
   return yield* Effect.raceFirst(Deferred.await(answers), cancellation);
 });
 
+const CLAUDE_RESUME_REJECTED_PREFIX = "Resume rejected by --resume-drops-turn:";
+const CLAUDE_RESUME_REJECTED_CODE = "resume_rejected";
+
 /** Exclude CLI-internal "[ede_diagnostic] ..." telemetry from error banners. */
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
   const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
@@ -4139,6 +4201,15 @@ function providerFailureFromResult(
       ? "usage_limit"
       : "provider_error";
   const listedError = resultUserFacingError(message);
+  // Deterministic, so the pin must go: a retry with the same fork target fails forever.
+  if (listedError?.startsWith(CLAUDE_RESUME_REJECTED_PREFIX)) {
+    return makeProviderFailure({
+      class: "provider_error",
+      code: CLAUDE_RESUME_REJECTED_CODE,
+      message:
+        "Claude refused the rewind because the dropped messages include activity T3 Code did not attribute to them. The full conversation was kept; send your message again to continue from it.",
+    });
+  }
   const apiErrorMessage =
     message.subtype === "success" &&
     message.terminal_reason === "api_error" &&
@@ -4395,6 +4466,7 @@ interface ActiveClaudeTurnContext {
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly promptUuid: string | null;
+  codeStats?: ThreadRewindCodeStats | undefined;
   promptEcho: "pending" | "confirmed";
   promptStarted: boolean;
   nativeWakeStarted: boolean;
@@ -6022,6 +6094,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ...(input.context.executedModel === undefined
             ? {}
             : { model: input.context.executedModel }),
+          ...(input.context.promptUuid === null
+            ? {}
+            : { nativePromptRef: input.context.promptUuid }),
         });
 
         const buildToolCallArtifacts = (input: {
@@ -7956,6 +8031,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           subagentToolCalls.clear();
         });
 
+        // Per-turn because the prompt's checkpoint still differs from disk only by this turn.
+        const readTurnCodeStats = Effect.fnUntraced(function* (context: ActiveClaudeTurnContext) {
+          const live = yield* Ref.get(queryContext);
+          if (context.promptUuid === null || live?.nativeThreadId !== context.nativeThreadId) {
+            return undefined;
+          }
+          const cwd = context.input.runtimePolicy.cwd;
+          const result = yield* live.query
+            .rewindFiles(context.promptUuid, { dryRun: true })
+            .pipe(Effect.timeoutOption("1 second"), Effect.orElseSucceed(Option.none));
+          return Option.isSome(result) && result.value.canRewind
+            ? claudeTurnCodeStats(result.value, (filePath) => {
+                if (cwd === null) return filePath;
+                const relative = path.relative(cwd, filePath);
+                return relative.startsWith("..") ? filePath : relative;
+              })
+            : undefined;
+        });
+
         const finalizeActiveTurn = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly status: Extract<
@@ -8105,6 +8199,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
           }
 
+          const codeStats = input.context.codeStats ?? (yield* readTurnCodeStats(input.context));
           const threadDisposition = input.threadDisposition ?? "reusable";
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
@@ -8149,6 +8244,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     status: input.status,
                     completedAt: input.completedAt,
                   }),
+                  ...(codeStats === undefined ? {} : { codeStats }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
                     input.result,
                     input.context.subagentsByTaskId.size > 0 ||
@@ -8202,7 +8298,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       );
                 // A stopped turn that wrote to the transcript moved past the pinned head.
                 const clearConversationHead =
-                  (input.status === "completed" || input.context.nativeMessageCursor !== null) &&
+                  (input.status === "completed" ||
+                    input.context.nativeMessageCursor !== null ||
+                    input.failure?.code === CLAUDE_RESUME_REJECTED_CODE) &&
                   input.context.input.providerThread.nativeConversationHeadRef !== null;
                 const goal =
                   nativeThreadId === null ? undefined : goalsByNativeThread.get(nativeThreadId);
@@ -8230,7 +8328,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 const providerThread: OrchestrationV2ProviderThread = {
                   ...input.context.input.providerThread,
                   providerSessionId: session.id,
-                  ...(clearConversationHead ? { nativeConversationHeadRef: null } : {}),
+                  ...(clearConversationHead
+                    ? withoutClaudeConversationHead(input.context.input.providerThread)
+                    : {}),
                   ...(nativeThreadId !== null && goalsByNativeThread.has(nativeThreadId)
                     ? { goal: goalsByNativeThread.get(nativeThreadId) ?? null }
                     : {}),
@@ -10992,6 +11092,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             title: turnInput.appThread.title,
             resume: shouldResume,
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
+            ...(resumeSessionAt === undefined ||
+            turnInput.providerThread.nativeMetadata?.conversationHeadDropsPrompt === undefined
+              ? {}
+              : {
+                  resumeDropsTurn:
+                    turnInput.providerThread.nativeMetadata.conversationHeadDropsPrompt,
+                }),
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
@@ -11572,6 +11679,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return next;
             });
             yield* existing.query.interrupt.pipe(Effect.timeoutOption("10 seconds"));
+            // The turn finalizes after this close, when no process is left to ask.
+            currentTurn.codeStats = yield* readTurnCodeStats(currentTurn);
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
               Effect.timeoutOption(CLAUDE_STOP_CONFIRM_TIMEOUT_MS),
@@ -12268,6 +12377,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
               const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
+              const dropsPrompt = claudeRollbackDropsPrompt(rollbackInput);
 
               if (rollbackInput.target.type === "thread_start" && resumeSessionAt === null) {
                 const resetNativeThreadId = yield* queryRunner.allocateSessionId;
@@ -12299,14 +12409,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 providerThread: {
                   ...rollbackInput.providerThread,
                   providerSessionId: input.providerSessionId,
-                  nativeConversationHeadRef:
-                    resumeSessionAt === null
-                      ? null
-                      : {
+                  ...withoutClaudeConversationHead(rollbackInput.providerThread),
+                  ...(resumeSessionAt === null
+                    ? {}
+                    : {
+                        nativeConversationHeadRef: {
                           driver: CLAUDE_PROVIDER,
                           nativeId: resumeSessionAt,
                           strength: "weak" as const,
                         },
+                        ...(dropsPrompt === undefined
+                          ? {}
+                          : {
+                              nativeMetadata: {
+                                ...rollbackInput.providerThread.nativeMetadata,
+                                conversationHeadDropsPrompt: dropsPrompt,
+                              },
+                            }),
+                      }),
                   status: "idle" as const,
                   lastRunOrdinal: rollbackInput.target.appRunOrdinal,
                   updatedAt: now,
@@ -12324,6 +12444,83 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     : new ProviderAdapter.ProviderAdapterRollbackThreadError({
                         driver: CLAUDE_PROVIDER,
                         providerThreadId: rollbackInput.providerThread.id,
+                        cause,
+                      }),
+                ),
+              ),
+          ),
+          rewindFiles: Effect.fn("ClaudeAdapterV2.rewindFiles")(
+            function* (rewindInput) {
+              const { providerThread, providerTurn, dryRun } = rewindInput;
+              const refuse = (detail: string) =>
+                new ProviderAdapter.ProviderAdapterRewindFilesError({
+                  driver: CLAUDE_PROVIDER,
+                  providerThreadId: providerThread.id,
+                  detail,
+                });
+              if (providerTurn.providerThreadId !== providerThread.id) {
+                return yield* refuse(
+                  "This turn's file checkpoints stayed with an earlier session.",
+                );
+              }
+              if (providerTurn.nativePromptRef === undefined) {
+                return yield* refuse("This turn has no file checkpoint.");
+              }
+              const currentTurn = yield* Ref.get(activeTurn);
+              if (!dryRun && currentTurn !== null) {
+                return yield* refuse("Stop the agent before restoring files.");
+              }
+              const promptUuid = providerTurn.nativePromptRef;
+              const nativeThreadId = yield* getNativeThreadId(providerThread);
+              const live = yield* Ref.get(queryContext);
+              const result = yield* (
+                live?.nativeThreadId === nativeThreadId && !live.stopping
+                  ? live.query.rewindFiles(promptUuid, { dryRun })
+                  : Effect.scoped(
+                      Effect.gen(function* () {
+                        const query = yield* Effect.acquireRelease(
+                          queryRunner.open({
+                            threadId: rewindInput.providerThread.appThreadId ?? input.threadId,
+                            providerSessionId: input.providerSessionId,
+                            // Checkpoints live on the whole chain, so this must ignore a pinned head.
+                            options: makeClaudeQueryOptions({
+                              modelSelection: input.modelSelection,
+                              modelCatalog,
+                              nativeThreadId,
+                              resume: true,
+                              cwd: input.runtimePolicy.cwd,
+                              settings: adapterOptions.settings,
+                              environment: adapterOptions.environment,
+                            }),
+                          }),
+                          (opened) => opened.close.pipe(Effect.ignore),
+                        );
+                        yield* query.messages.pipe(
+                          Stream.runDrain,
+                          Effect.ignore,
+                          Effect.forkScoped,
+                        );
+                        return yield* query.rewindFiles(promptUuid, { dryRun });
+                      }),
+                    )
+              ).pipe(Effect.timeout("30 seconds"));
+              return {
+                canRewind: result.canRewind,
+                ...(result.error === undefined ? {} : { reason: result.error }),
+                filesChanged: result.filesChanged ?? [],
+                insertions: result.insertions ?? 0,
+                deletions: result.deletions ?? 0,
+              };
+            },
+            (effect, rewindInput) =>
+              effect.pipe(
+                Effect.mapError((cause) =>
+                  isProviderAdapterRewindFilesError(cause)
+                    ? cause
+                    : new ProviderAdapter.ProviderAdapterRewindFilesError({
+                        driver: CLAUDE_PROVIDER,
+                        providerThreadId: rewindInput.providerThread.id,
+                        detail: "Claude could not read this turn's file checkpoint.",
                         cause,
                       }),
                 ),

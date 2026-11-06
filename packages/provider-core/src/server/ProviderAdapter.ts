@@ -314,6 +314,21 @@ export class ProviderAdapterRollbackThreadError extends Schema.TaggedError<Provi
   }
 }
 
+export class ProviderAdapterRewindFilesError extends Schema.TaggedError<ProviderAdapterRewindFilesError>()(
+  "ProviderAdapterRewindFilesError",
+  {
+    driver: ProviderDriverKind,
+    providerThreadId: ProviderThreadId,
+    /** Safe to show the user. */
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class ProviderAdapterForkThreadError extends Schema.TaggedError<ProviderAdapterForkThreadError>()(
   "ProviderAdapterForkThreadError",
   {
@@ -463,6 +478,7 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterEnsureThreadError,
   ProviderAdapterReadThreadSnapshotError,
   ProviderAdapterRollbackThreadError,
+  ProviderAdapterRewindFilesError,
   ProviderAdapterForkThreadError,
   ProviderAdapterTurnStartError,
   ProviderAdapterSteerRunUnsupportedError,
@@ -566,6 +582,24 @@ export interface ProviderAdapterV2RollbackThreadInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+}
+
+export interface ProviderAdapterV2RewindFilesInput {
+  readonly providerThread: OrchestrationV2ProviderThread;
+  /** Restores to the state before this turn's prompt. */
+  readonly providerTurn: OrchestrationV2ProviderTurn;
+  readonly dryRun: boolean;
+}
+
+export interface ProviderAdapterV2RewindFilesResult {
+  readonly canRewind: boolean;
+  /** Why not, when `canRewind` is false. */
+  readonly reason?: string;
+  /** Absolute paths that differ from the target. */
+  readonly filesChanged: ReadonlyArray<string>;
+  /** Line counts of the restore itself, not of the turn being undone. */
+  readonly insertions: number;
+  readonly deletions: number;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {
@@ -714,6 +748,10 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
+  /** Present when the provider tracks its own edits (`providerCanRewindFiles`). */
+  readonly rewindFiles?: (
+    input: ProviderAdapterV2RewindFilesInput,
+  ) => Effect.Effect<ProviderAdapterV2RewindFilesResult, ProviderAdapterV2Error>;
   readonly forkThread: (
     input: ProviderAdapterV2ForkThreadInput,
   ) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;

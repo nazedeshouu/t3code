@@ -42,6 +42,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
+  ProviderThreadId,
   ProjectId,
   ProviderInstanceId,
   type ResolvedProviderInstanceEnvironment,
@@ -946,6 +947,7 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.void,
@@ -1072,6 +1074,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
               readMcpResource: () => Effect.die("unexpected MCP resource read"),
               callMcpTool: () => Effect.die("unexpected MCP tool call"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
+              rewindFiles: () => Effect.succeed({ canRewind: false }),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
               close: Effect.void,
@@ -1385,6 +1388,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
             readMcpResource: () => Effect.die("unexpected MCP resource read"),
             callMcpTool: () => Effect.die("unexpected MCP tool call"),
             listPermissionRules: Effect.die("unexpected permission rules read"),
+            rewindFiles: () => Effect.succeed({ canRewind: false }),
             stopTask: () => Effect.void,
             interrupt: Effect.void,
             close: Effect.void,
@@ -1576,6 +1580,7 @@ describe("ClaudeAdapterV2 resume compaction", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.void,
@@ -1966,6 +1971,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                     readMcpResource: () => Effect.die("unexpected MCP resource read"),
                     callMcpTool: () => Effect.die("unexpected MCP tool call"),
                     listPermissionRules: Effect.die("unexpected permission rules read"),
+                    rewindFiles: () => Effect.succeed({ canRewind: false }),
                     stopTask: () => Effect.void,
                     interrupt: Effect.void,
                     close: Queue.shutdown(messages),
@@ -2477,6 +2483,7 @@ describe("ClaudeAdapterV2 native fork", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.void,
@@ -2819,6 +2826,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.void,
@@ -3166,6 +3174,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly promptSuggestions?: boolean;
+    readonly rewindFiles?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["rewindFiles"];
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -3286,6 +3295,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: options?.rewindFiles ?? (() => Effect.succeed({ canRewind: false })),
                   stopTask: options?.stopTask ?? (() => Effect.void),
                   interrupt: Effect.void,
                   close: Queue.shutdown(processMessages),
@@ -3320,6 +3330,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 callMcpTool:
                   options?.mcp?.callMcpTool ?? (() => Effect.die("unexpected MCP tool call")),
                 listPermissionRules: options?.mcp?.listPermissionRules ?? Effect.succeed([]),
+                rewindFiles: options?.rewindFiles ?? (() => Effect.succeed({ canRewind: false })),
                 stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
@@ -6747,6 +6758,271 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   };
   const makeRollbackHarness = makeWakeHarnessWithOptions({
     close: (sdkMessages) => Queue.shutdown(sdkMessages),
+  });
+  const harnessLayer = Layer.mergeAll(
+    IdAllocator.layer,
+    McpProviderSessions.layer,
+    NodeServices.layer,
+    NodeCrypto.layer,
+  );
+
+  describe("file rewind", () => {
+    const runTurn = Effect.fnUntraced(function* (
+      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+      input: {
+        readonly id: string;
+        readonly providerThread: OrchestrationV2ProviderThread;
+        readonly ordinal: number;
+      },
+    ) {
+      yield* harness.runtime.startTurn({
+        ...makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: input.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(input.id),
+          text: `Turn ${input.id}.`,
+          attachments: [],
+          nativeThreadHasTurns: input.ordinal > 1,
+        }),
+        providerTurnOrdinal: input.ordinal,
+      });
+      yield* harness.offerAndWait(
+        makeAssistantTextFrame({ uuid: `${input.id}-assistant`, text: "Done." }),
+      );
+      yield* harness.offerAndWait(makeResultFrame({ uuid: `${input.id}-result`, result: "Done." }));
+      yield* Queue.take(harness.terminalReceipts);
+      return lastProviderTurn(harness.events);
+    });
+
+    it.effect("records each turn's checkpoint id and flips stats to the turn's own direction", () =>
+      Effect.gen(function* () {
+        const calls: Array<{ uuid: string; dryRun: boolean }> = [];
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+          rewindFiles: (uuid, options) =>
+            Effect.sync(() => {
+              calls.push({ uuid, dryRun: options.dryRun });
+              return {
+                canRewind: true,
+                filesChanged: ["/repo/src/a.ts"],
+                insertions: 1,
+                deletions: 3,
+              };
+            }),
+        });
+        const turn = yield* runTurn(harness, {
+          id: "first",
+          providerThread: harness.providerThread,
+          ordinal: 1,
+        });
+        assert.equal(turn.nativePromptRef, harness.promptUuid(0));
+        assert.deepEqual(calls, [{ uuid: harness.promptUuid(0), dryRun: true }]);
+        assert.deepEqual(turn.codeStats, {
+          filesChanged: 1,
+          insertions: 3,
+          deletions: 1,
+          primaryPath: "/repo/src/a.ts",
+        });
+      }).pipe(Effect.provide(harnessLayer)),
+    );
+
+    it.effect("reads an interrupted turn's stats before closing its process", () =>
+      Effect.gen(function* () {
+        const harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>> =
+          yield* makeWakeHarnessWithOptions({
+            close: (sdkMessages) => Queue.shutdown(sdkMessages),
+            rewindFiles: () =>
+              Effect.succeed({
+                canRewind: true,
+                filesChanged: ["/repo/b.ts", "/repo/c.ts"],
+                insertions: 0,
+                deletions: 4,
+              }),
+          });
+        const turnInput = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("stopped"),
+          text: "Start something long.",
+          attachments: [],
+          nativeThreadHasTurns: false,
+        });
+        yield* harness.runtime.startTurn(turnInput);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "stopped-assistant", text: "Working." }),
+        );
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: lastProviderTurn(harness.events).id,
+        });
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "interrupted");
+        assert.deepEqual(lastProviderTurn(harness.events).codeStats, {
+          filesChanged: 2,
+          insertions: 4,
+          deletions: 0,
+          primaryPath: null,
+        });
+      }).pipe(Effect.provide(harnessLayer)),
+    );
+
+    it.effect("rewinds on the live query, or a resumed one that ignores a pinned head", () =>
+      Effect.gen(function* () {
+        const calls: Array<{ uuid: string; dryRun: boolean; process: number }> = [];
+        const harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>> =
+          yield* makeWakeHarnessWithOptions({
+            close: (sdkMessages) => Queue.shutdown(sdkMessages),
+            freshQueueOnReopen: true,
+            rewindFiles: (uuid, options) =>
+              Effect.sync(() => {
+                calls.push({ ...options, uuid, process: harness.processQueues.length });
+                return { canRewind: true, filesChanged: [] };
+              }),
+          });
+        const turn = yield* runTurn(harness, {
+          id: "first",
+          providerThread: harness.providerThread,
+          ordinal: 1,
+        });
+        const session = harness.runtime;
+        const rewindFiles = session.rewindFiles;
+        assert.isDefined(rewindFiles);
+        if (rewindFiles === undefined) return;
+
+        yield* rewindFiles({
+          providerThread: harness.providerThread,
+          providerTurn: turn,
+          dryRun: false,
+        });
+        assert.deepEqual(calls.at(-1), {
+          uuid: harness.promptUuid(0),
+          dryRun: false,
+          process: 1,
+        });
+
+        const pinned = {
+          ...harness.providerThread,
+          nativeConversationHeadRef: {
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeId: "pinned-head",
+            strength: "weak" as const,
+          },
+        };
+        yield* harness.runtime.rollbackThread({
+          providerThread: harness.providerThread,
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("checkpoint-start"),
+            appRunOrdinal: 0,
+          },
+          providerThreadTurns: [],
+        });
+        yield* rewindFiles({ providerThread: pinned, providerTurn: turn, dryRun: true });
+        assert.equal(calls.at(-1)?.process, 2);
+        assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+        assert.isUndefined(harness.getOpenedOptions()?.resumeSessionAt);
+        assert.isTrue(harness.getOpenedOptions()?.enableFileCheckpointing);
+
+        const refused = yield* Effect.flip(
+          rewindFiles({
+            providerThread: harness.providerThread,
+            providerTurn: { ...turn, providerThreadId: ProviderThreadId.make("forked-source") },
+            dryRun: true,
+          }),
+        );
+        assert.equal(refused._tag, "ProviderAdapterRewindFilesError");
+      }).pipe(Effect.provide(harnessLayer)),
+    );
+
+    it.effect("declares the dropped turn only when it is the whole tail", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+          freshQueueOnReopen: true,
+        });
+        const first = yield* runTurn(harness, {
+          id: "first",
+          providerThread: harness.providerThread,
+          ordinal: 1,
+        });
+        const second = yield* runTurn(harness, {
+          id: "second",
+          providerThread: harness.providerThread,
+          ordinal: 2,
+        });
+        const third = yield* runTurn(harness, {
+          id: "third",
+          providerThread: harness.providerThread,
+          ordinal: 3,
+        });
+        const rollbackAfter = (
+          kept: typeof first,
+          providerThreadTurns: ReadonlyArray<typeof first>,
+          providerThread = harness.providerThread,
+        ) =>
+          harness.runtime
+            .rollbackThread({
+              providerThread,
+              target: {
+                type: "provider_turn",
+                checkpointId: CheckpointId.make("checkpoint-kept"),
+                appRunOrdinal: kept.ordinal,
+                providerTurn: kept,
+              },
+              providerThreadTurns,
+            })
+            .pipe(Effect.map((snapshot) => snapshot.providerThread));
+        const all = [first, second, third];
+
+        const oneTurn = yield* rollbackAfter(second, all);
+        assert.equal(oneTurn.nativeMetadata?.conversationHeadDropsPrompt, third.nativePromptRef);
+        const twoTurns = yield* rollbackAfter(first, all);
+        assert.isUndefined(twoTurns.nativeMetadata?.conversationHeadDropsPrompt);
+        const interruptedKept = yield* rollbackAfter({ ...second, status: "interrupted" }, all);
+        assert.isUndefined(interruptedKept.nativeMetadata?.conversationHeadDropsPrompt);
+        const alreadyPinned = yield* rollbackAfter(first, [first, second], oneTurn);
+        assert.isUndefined(alreadyPinned.nativeMetadata?.conversationHeadDropsPrompt);
+
+        yield* harness.runtime.startTurn({
+          ...makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: oneTurn,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("after-rollback"),
+            text: "Continue from here.",
+            attachments: [],
+          }),
+          providerTurnOrdinal: 4,
+        });
+        assert.equal(harness.getOpenedOptions()?.resumeSessionAt, second.nativeTurnRef?.nativeId);
+        assert.equal(harness.getOpenedOptions()?.resumeDropsTurn, third.nativePromptRef);
+
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "refused-result",
+            result: "",
+            subtype: "error_during_execution",
+            isError: true,
+            errors: [
+              "Resume rejected by --resume-drops-turn: resuming at x would discard entries not attributable to turn y",
+            ],
+          }),
+        );
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, "failed");
+        assert.equal(terminal.failure?.code, "resume_rejected");
+        assert.include(terminal.failure?.message ?? "", "The full conversation was kept");
+        const cleared = harness.events.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.equal(cleared?.type, "provider_thread.updated");
+        if (cleared?.type !== "provider_thread.updated") return;
+        assert.isNull(cleared.providerThread.nativeConversationHeadRef);
+        assert.isUndefined(cleared.providerThread.nativeMetadata?.conversationHeadDropsPrompt);
+      }).pipe(Effect.provide(harnessLayer)),
+    );
   });
 
   it.effect.each([
@@ -10836,6 +11112,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: isFirstProcess
@@ -11165,6 +11442,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     readMcpResource: () => Effect.die("unexpected MCP resource read"),
                     callMcpTool: () => Effect.die("unexpected MCP tool call"),
                     listPermissionRules: Effect.die("unexpected permission rules read"),
+                    rewindFiles: () => Effect.succeed({ canRewind: false }),
                     stopTask: () => Effect.void,
                     interrupt: Effect.void,
                     close: Queue.shutdown(queue),
@@ -13413,6 +13691,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 interrupt: Effect.void,
                 close:
                   closeSignal === undefined
@@ -16353,6 +16632,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Queue.shutdown(sdkMessages),
@@ -16531,6 +16811,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     readMcpResource: () => Effect.die("unexpected MCP resource read"),
                     callMcpTool: () => Effect.die("unexpected MCP tool call"),
                     listPermissionRules: Effect.die("unexpected permission rules read"),
+                    rewindFiles: () => Effect.succeed({ canRewind: false }),
                     stopTask: () => Effect.void,
                     interrupt: Effect.void,
                     close: Queue.shutdown(sdkMessages),
@@ -16712,6 +16993,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Queue.shutdown(sdkMessages),
@@ -16911,6 +17193,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
                   callMcpTool: () => Effect.die("unexpected MCP tool call"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
+                  rewindFiles: () => Effect.succeed({ canRewind: false }),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.sync(() => {
@@ -17058,6 +17341,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     readMcpResource: () => Effect.die("unexpected MCP resource read"),
                     callMcpTool: () => Effect.die("unexpected MCP tool call"),
                     listPermissionRules: Effect.die("unexpected permission rules read"),
+                    rewindFiles: () => Effect.succeed({ canRewind: false }),
                     stopTask: () => Effect.void,
                     interrupt: Effect.void,
                     close: Queue.shutdown(sdkMessages),
