@@ -42,6 +42,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
@@ -79,6 +80,8 @@ const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't 
 const EARLIER_SESSION = "This turn's file checkpoints stayed with an earlier provider session.";
 const NO_CONVERSATION = "This thread has no provider conversation to rewind.";
 const CODE_NOT_RESTORED = "The conversation was rewound, but the code could not be restored.";
+/** Recorded for a path holding anything but a regular file. It never matches at undo. */
+const NOT_A_FILE = "not-a-file";
 
 /** A refusal or failure the user sees through `rollbackFailure`. Retrying it would not help. */
 export class ThreadRewindError extends Schema.TaggedError<ThreadRewindError>()(
@@ -105,10 +108,20 @@ const StashedFile = Schema.Struct({
   mode: Schema.NullOr(Schema.Number),
 });
 
+/** What a rewind left at a stashed path. Undo overwrites nothing that has moved on from this. */
+const RestoredFile = Schema.Struct({
+  path: Schema.String,
+  /** Null records that the rewind left nothing here. */
+  hash: Schema.NullOr(Schema.String),
+  parent: Schema.String,
+});
+
 /** Everything undo needs, written once before the rewind mutates anything. */
 const RewindUndoRecord = Schema.Struct({
   filesRestored: Schema.Number,
   files: Schema.Array(StashedFile),
+  /** Filled in once the provider has restored the files. */
+  restored: Schema.Array(RestoredFile),
   scope: Schema.NullOr(OrchestrationV2CheckpointScopeJson),
   /** Null when the conversation was left alone. */
   providerThread: Schema.NullOr(OrchestrationV2ProviderThreadJson),
@@ -158,6 +171,15 @@ export class ThreadRewindService extends Context.Service<
 const singleLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 const pathKey = (id: string) => Base64Url.encode(new TextEncoder().encode(id));
+
+const noneIfMissing = <A, R>(effect: Effect.Effect<A, PlatformError.PlatformError, R>) =>
+  effect.pipe(
+    Effect.asSome,
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeedNone,
+    ),
+  );
 
 type CodeEngine =
   | { readonly type: "provider"; readonly providerTurn: ProviderTurn }
@@ -248,6 +270,12 @@ export const layer = Layer.effect(
           }),
         );
 
+    const relativeTo = (cwd: string | null | undefined, filePath: string) => {
+      if (cwd == null) return filePath;
+      const relative = path.relative(cwd, filePath);
+      return relative.startsWith("..") || path.isAbsolute(relative) ? filePath : relative;
+    };
+
     const stashDirectory = (threadId: ThreadId, rewindId: CommandId) =>
       path.join(config.stateDir, STASH_DIRECTORY, pathKey(threadId), pathKey(rewindId));
 
@@ -300,16 +328,88 @@ export const layer = Layer.effect(
     });
 
     // Renamed into place, so a crash leaves the record whole.
-    const markRolledBack = Effect.fnUntraced(function* (
+    const saveRecord = Effect.fnUntraced(function* (
       threadId: ThreadId,
       rewindId: CommandId,
       record: RewindUndoRecord,
-      rolledBackTo: RewindUndoRecord["rolledBackTo"],
     ) {
       const directory = stashDirectory(threadId, rewindId);
       const partial = path.join(directory, `${RECORD_FILE}.partial`);
-      yield* fileSystem.writeFileString(partial, yield* encodeRecord({ ...record, rolledBackTo }));
+      yield* fileSystem.writeFileString(partial, yield* encodeRecord(record));
       yield* fileSystem.rename(partial, path.join(directory, RECORD_FILE));
+    });
+
+    const fileState = Effect.fnUntraced(function* (filePath: string) {
+      const info = yield* noneIfMissing(fileSystem.lstat(filePath));
+      if (Option.isNone(info)) return null;
+      if (info.value.type !== "File") return NOT_A_FILE;
+      const bytes = yield* fileSystem.readFile(filePath);
+      return NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+    });
+
+    /** Resolves through the nearest surviving ancestor, as a rewind may have removed the parent. */
+    const realParent = Effect.fnUntraced(function* (filePath: string) {
+      let directory = path.dirname(filePath);
+      let missing = "";
+      while (true) {
+        const real = yield* noneIfMissing(fileSystem.realPath(directory));
+        if (Option.isSome(real)) return path.join(real.value, missing);
+        missing = path.join(path.basename(directory), missing);
+        directory = path.dirname(directory);
+      }
+    });
+
+    const recordRestoredFiles = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      rewindId: CommandId,
+      record: RewindUndoRecord,
+    ) {
+      const restored = yield* Effect.forEach(record.files, (file) =>
+        Effect.all({
+          path: Effect.succeed(file.path),
+          hash: fileState(file.path),
+          parent: realParent(file.path),
+        }),
+      );
+      const complete = { ...record, restored };
+      yield* saveRecord(threadId, rewindId, complete);
+      return complete;
+    });
+
+    const refuseChangedFiles = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      rewindId: CommandId,
+      cwd: string | null | undefined,
+      record: RewindUndoRecord,
+    ) {
+      yield* Effect.forEach(
+        record.restored,
+        (file) =>
+          Effect.gen(function* () {
+            const name = relativeTo(cwd, file.path);
+            const changed = `${name} changed after the rewind, so Undo would overwrite it.`;
+            const blob = record.files.find(({ path }) => path === file.path)?.blob;
+            const { parent, hash, undone } = yield* Effect.all({
+              parent: realParent(file.path),
+              hash: fileState(file.path),
+              // A replay finds what an interrupted undo already put back.
+              undone:
+                blob == null
+                  ? Effect.succeed(null)
+                  : fileState(path.join(stashDirectory(threadId, rewindId), blob)),
+            }).pipe(Effect.mapError((cause) => refuse(threadId, changed, cause)));
+            if (parent !== file.parent) {
+              return yield* refuse(
+                threadId,
+                `The folder holding ${name} moved after the rewind, so Undo can't restore it.`,
+              );
+            }
+            if (hash === NOT_A_FILE || (hash !== file.hash && hash !== undone)) {
+              return yield* refuse(threadId, changed);
+            }
+          }),
+        { discard: true },
+      );
     });
 
     const restoreFiles = Effect.fnUntraced(function* (
@@ -324,9 +424,19 @@ export const layer = Layer.effect(
           file.blob === null
             ? fileSystem.remove(file.path, { force: true })
             : Effect.gen(function* () {
-                yield* fileSystem.makeDirectory(path.dirname(file.path), { recursive: true });
-                yield* fileSystem.copyFile(path.join(directory, file.blob ?? ""), file.path);
-                if (file.mode !== null) yield* fileSystem.chmod(file.path, file.mode);
+                const parent = path.dirname(file.path);
+                yield* fileSystem.makeDirectory(parent, { recursive: true });
+                // Renamed into place, so a link at the path is replaced instead of followed.
+                const temporary = path.join(parent, `.t3-rewind-${NodeCrypto.randomUUID()}`);
+                yield* Effect.gen(function* () {
+                  yield* fileSystem.copyFile(path.join(directory, file.blob ?? ""), temporary);
+                  if (file.mode !== null) yield* fileSystem.chmod(temporary, file.mode);
+                  yield* fileSystem.rename(temporary, file.path);
+                }).pipe(
+                  Effect.onError(() =>
+                    fileSystem.remove(temporary, { force: true }).pipe(Effect.ignore),
+                  ),
+                );
               }),
         { discard: true },
       );
@@ -439,12 +549,8 @@ export const layer = Layer.effect(
       return result;
     });
 
-    const relativeToScope = (loaded: LoadedRewind, filePath: string) => {
-      const cwd = loaded.context.scope?.cwd ?? loaded.context.thread.worktreePath;
-      if (cwd == null) return filePath;
-      const relative = path.relative(cwd, filePath);
-      return relative.startsWith("..") || path.isAbsolute(relative) ? filePath : relative;
-    };
+    const relativeToScope = (loaded: LoadedRewind, filePath: string) =>
+      relativeTo(loaded.context.scope?.cwd ?? loaded.context.thread.worktreePath, filePath);
 
     const measureCode = Effect.fnUntraced(function* (loaded: LoadedRewind, engine: CodeEngine) {
       if (engine.type === "unavailable")
@@ -598,6 +704,7 @@ export const layer = Layer.effect(
       }
       return yield* writeRecord(input.threadId, input.rewindId, filesChanged, {
         filesRestored: filesChanged.length,
+        restored: [],
         scope: context.scope ?? null,
         providerThread: rollsBack ? providerThread : null,
         rolledBackTo: null,
@@ -651,7 +758,10 @@ export const layer = Layer.effect(
         ...loaded.rollback,
         session: yield* session,
       });
-      yield* markRolledBack(input.threadId, input.rewindId, record, snapshot.providerThread);
+      yield* saveRecord(input.threadId, input.rewindId, {
+        ...record,
+        rolledBackTo: snapshot.providerThread,
+      });
       return snapshot;
     });
 
@@ -674,7 +784,7 @@ export const layer = Layer.effect(
       const session = yield* Effect.cached(rollback.openSession(loaded.rollback));
 
       const existing = yield* readRecord(threadId, rewindId);
-      const record = Option.isSome(existing)
+      const stashed = Option.isSome(existing)
         ? existing.value
         : yield* createRecord(loaded, input, engine, session);
 
@@ -683,6 +793,10 @@ export const layer = Layer.effect(
       // failure puts them back. A native rollback can't be taken back and git keeps no copy of the
       // files, so git restores last and its failure is reported once the rollback is on record.
       if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
+      const record =
+        engine?.type === "provider"
+          ? yield* recordRestoredFiles(threadId, rewindId, stashed)
+          : stashed;
       const snapshot = rollsBack ? yield* rollbackOnce(loaded, input, record, session) : undefined;
       const gitRestore = yield* Effect.exit(
         engine?.type === "git"
@@ -804,6 +918,12 @@ export const layer = Layer.effect(
           return yield* refuse(threadId, UNDO_UNAVAILABLE);
         }
       }
+      yield* refuseChangedFiles(
+        threadId,
+        rewindId,
+        record.scope?.cwd ?? current.worktreePath,
+        record,
+      );
       yield* restoreFiles(threadId, rewindId, record);
       yield* threadCommands.withLock(
         threadId,
