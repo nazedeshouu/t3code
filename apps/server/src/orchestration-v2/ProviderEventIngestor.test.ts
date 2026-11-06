@@ -260,6 +260,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
         generateCommitMessage: () => Effect.die("unused"),
         generatePrContent: () => Effect.die("unused"),
         generateThreadTitle: () => Effect.die("unused"),
+        generateThreadSummary: () => Effect.die("unused"),
         generateReviewGuide: () => Effect.die("unused"),
         generateTranscriptionPostProcessing: () => Effect.die("unused"),
       },

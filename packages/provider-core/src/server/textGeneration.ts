@@ -114,6 +114,19 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface ThreadSummaryGenerationInput {
+  cwd: string;
+  /** Rendered conversation to summarize. */
+  history: string;
+  /** The user's guidance for what the summary keeps. */
+  instructions?: string | undefined;
+  modelSelection: ModelSelection;
+}
+
+export interface ThreadSummaryGenerationResult {
+  summary: string;
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
@@ -138,4 +151,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateThreadSummary: (
+    input: ThreadSummaryGenerationInput,
+  ) => Effect.Effect<ThreadSummaryGenerationResult, TextGenerationError>;
 }

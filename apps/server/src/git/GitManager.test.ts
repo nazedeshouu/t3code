@@ -316,6 +316,7 @@ function createTextGeneration(
       Effect.succeed({
         title: "Update workflow",
       }),
+    generateThreadSummary: () => Effect.succeed({ summary: "Workflow summary" }),
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
     generateTranscriptionPostProcessing: () =>
       Effect.succeed({ transcription: "processed transcript" }),
@@ -367,6 +368,7 @@ function createTextGeneration(
             }),
         ),
       ),
+    generateThreadSummary: (input) => implementation.generateThreadSummary(input),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
     generateTranscriptionPostProcessing: (input) =>
       implementation.generateTranscriptionPostProcessing(input),
