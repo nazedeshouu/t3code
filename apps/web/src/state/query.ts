@@ -12,6 +12,8 @@ export interface EnvironmentQueryView<A, E = unknown> {
   readonly data: A | null;
   readonly dataUpdatedAt: number;
   readonly error: string | null;
+  /** The server is too old to know this request. */
+  readonly unsupported: boolean;
   readonly failure: E | null;
   readonly isPending: boolean;
   readonly isSuccess: boolean;
@@ -23,6 +25,12 @@ export function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
     : "The environment request failed.";
+}
+
+/** How the RPC server answers a tag it has no handler for. */
+export function isUnknownRequestCause(cause: Cause.Cause<unknown>): boolean {
+  const error = Cause.squash(cause);
+  return typeof error === "string" && error.startsWith("Unknown request tag:");
 }
 
 function queryUpdatedAt(result: AsyncResult.AsyncResult<unknown, unknown>): number {
@@ -43,6 +51,7 @@ export function useEnvironmentQuery<A, E>(
     data: AsyncResult.getOrElse(result, () => null),
     dataUpdatedAt: queryUpdatedAt(result),
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
+    unsupported: result._tag === "Failure" && isUnknownRequestCause(result.cause),
     failure:
       result._tag === "Failure" ? Option.getOrNull(Cause.findErrorOption(result.cause)) : null,
     isPending: atom !== null && result.waiting,

@@ -4,7 +4,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
-  queries: new Map<string, { data: unknown; error: string | null }>(),
+  queries: new Map<string, { data: unknown; error: string | null; unsupported?: boolean }>(),
 }));
 
 vi.mock(import("../../state/orchestration"), () => ({
@@ -44,7 +44,7 @@ const preview: ThreadRewindPreview = {
 };
 
 function setup(overrides: Partial<ThreadRewindPreview> = {}) {
-  state.queries = new Map<string, { data: unknown; error: string | null }>([
+  state.queries = new Map<string, { data: unknown; error: string | null; unsupported?: boolean }>([
     [
       "targets",
       {
@@ -195,6 +195,18 @@ it("renumbers around the server's modes and returns to the list on Never mind", 
   await userEvent.keyboard("2");
   await expect.element(page.getByRole("option", { name: "Current" })).toBeInTheDocument();
   expect(onRewind).not.toHaveBeenCalled();
+});
+
+it("tells an older server's user what to do instead of showing the failure", async () => {
+  const onRewind = setup();
+  state.queries.set("targets", {
+    data: null,
+    error: "The environment request failed.",
+    unsupported: true,
+  });
+  await using screen = await render(<Dock onRewind={onRewind} />);
+  await expect.element(screen.getByText("Update this server to use rewind.")).toBeInTheDocument();
+  await expect.element(screen.getByText("The environment request failed.")).not.toBeInTheDocument();
 });
 
 it("leaves keys alone while another surface owns them", async () => {
