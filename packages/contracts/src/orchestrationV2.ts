@@ -1,3 +1,11 @@
+import {
+  ThreadRewindListTargetsInput,
+  ThreadRewindListTargetsResult,
+  ThreadRewindMode,
+  ThreadRewindPreview,
+  ThreadRewindPreviewInput,
+  ThreadRewindUndo,
+} from "./threadRewind.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
@@ -2126,6 +2134,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   /** The latest run answers a background-work progress wake, like a Monitor line, not a terminal one. Absent from older servers. */
   latestRunBackgroundWake: Schema.optional(Schema.Boolean),
   activeRunId: Schema.NullOr(RunId),
+  rewindUndo: Schema.optional(Schema.NullOr(ThreadRewindUndo)),
   activityRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   activityRunStatus: Schema.optional(
     Schema.NullOr(Schema.Literals(["preparing", "starting", "running", "waiting"])),
@@ -3338,6 +3347,23 @@ export const OrchestrationV2Command = Schema.Union([
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
   }),
+  /** Rewinds to before `messageId`. The server picks the file engine and rejects unavailable modes. */
+  Schema.Struct({
+    type: Schema.Literal("thread.rewind"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    mode: ThreadRewindMode,
+    /** Optional guidance for `summarize_from_here`. */
+    summaryInstructions: Schema.optional(TrimmedNonEmptyString),
+  }),
+  /** Reverses the rewind named by the thread's `rewindUndo`. */
+  Schema.Struct({
+    type: Schema.Literal("thread.rewind.undo"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    rewindId: CommandId,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.fork"),
     ...OrchestrationV2CreationFields,
@@ -3617,6 +3643,8 @@ export type OrchestrationV2ServerCommand = OrchestrationV2Command | Orchestratio
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
+  listRewindTargets: "orchestration.listRewindTargets",
+  previewRewind: "orchestration.previewRewind",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   searchThread: "orchestration.searchThread",
@@ -4276,6 +4304,14 @@ export class OrchestrationV2SearchThreadError extends Schema.TaggedError<Orchest
 }
 
 export const OrchestrationV2RpcSchemas = {
+  listRewindTargets: {
+    input: ThreadRewindListTargetsInput,
+    output: ThreadRewindListTargetsResult,
+  },
+  previewRewind: {
+    input: ThreadRewindPreviewInput,
+    output: ThreadRewindPreview,
+  },
   searchThread: {
     input: OrchestrationV2SearchThreadInput,
     output: OrchestrationV2SearchThreadResult,
