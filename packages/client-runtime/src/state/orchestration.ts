@@ -206,6 +206,19 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,
     }),
+    // Mounted only while the rewind dock is open; every opening reads the thread as it is now.
+    rewindTargets: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:rewind-targets",
+      tag: ORCHESTRATION_V2_WS_METHODS.listRewindTargets,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
+    rewindPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:rewind-preview",
+      tag: ORCHESTRATION_V2_WS_METHODS.previewRewind,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     turnItem: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: OrchestrationV2GetTurnItemInput;

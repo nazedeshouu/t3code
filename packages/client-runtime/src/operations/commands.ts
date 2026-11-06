@@ -25,6 +25,7 @@ import {
   type RuntimeRequestId,
   type ThreadId,
   type ThreadEnvMode,
+  type ThreadRewindMode,
   type UploadChatAttachment,
   type GuestMessageId,
 } from "@t3tools/contracts";
@@ -214,6 +215,16 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
   readonly checkpointId?: string;
   readonly scopeId?: string;
   readonly turnCount?: number;
+}
+
+export interface RewindThreadInput extends ThreadCommandInput {
+  readonly messageId: MessageId;
+  readonly mode: ThreadRewindMode;
+  readonly summaryInstructions?: string;
+}
+
+export interface UndoThreadRewindInput extends ThreadCommandInput {
+  readonly rewindId: CommandId;
 }
 
 export type StopThreadSessionInput = ThreadCommandInput;
@@ -961,6 +972,31 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
     });
   },
 );
+
+export const rewindThread = Effect.fn("EnvironmentCommands.rewindThread")(function* (
+  input: RewindThreadInput,
+) {
+  const summaryInstructions = input.summaryInstructions?.trim();
+  return yield* dispatch({
+    type: "thread.rewind",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    messageId: input.messageId,
+    mode: input.mode,
+    ...(summaryInstructions ? { summaryInstructions } : {}),
+  });
+});
+
+export const undoThreadRewind = Effect.fn("EnvironmentCommands.undoThreadRewind")(function* (
+  input: UndoThreadRewindInput,
+) {
+  return yield* dispatch({
+    type: "thread.rewind.undo",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    rewindId: input.rewindId,
+  });
+});
 
 export const stopThreadSession = Effect.fn("EnvironmentCommands.stopThreadSession")(function* (
   input: StopThreadSessionInput,
