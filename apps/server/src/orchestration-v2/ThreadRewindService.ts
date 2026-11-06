@@ -765,6 +765,23 @@ export const layer = Layer.effect(
               });
             }
           }
+          // A client that loaded the thread after the rewind never received these items.
+          if (record.runs.length > 0) {
+            const { turnItems } = yield* projections.getThreadRecords(threadId, ["turnItems"], {
+              turnItemRunIds: record.runs.map((run) => run.id),
+            });
+            for (const item of turnItems) {
+              events.push({
+                id: yield* ids.allocate.event({ threadId }),
+                type: "turn-item.updated",
+                threadId,
+                ...(item.runId === null ? {} : { runId: item.runId }),
+                providerInstanceId: providerInstanceId ?? thread.providerInstanceId,
+                occurredAt: now,
+                payload: item,
+              });
+            }
+          }
           if (record.summary !== null) {
             const summaryHandoffId = record.summary.handoffId;
             const { contextHandoffs } = yield* projections.getThreadRecords(threadId, [

@@ -403,6 +403,26 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
         payload,
       }) as OrchestrationV2DomainEvent;
 
+    it("brings a held item back when its run's rollback is undone", () => {
+      const kept = runItem("kept", run.id, 1);
+      const restored = runItem("restored", steerRunId, 2);
+      const partial = { partialTimeline: true, latestLocalTurnOrdinal: 2 };
+      const rolledBack = applyOrchestrationV2ProjectionEvent(
+        windowOf([run, steerRun], [kept, restored]),
+        runEvent({ ...steerRun, status: "rolled_back" }),
+        partial,
+      );
+      const undone = applyOrchestrationV2ProjectionEvent(rolledBack, runEvent(steerRun), partial);
+      expect(undone?.visibleTurnItems.map((row) => row.sourceItemId)).toEqual([kept.id]);
+
+      const shown = applyOrchestrationV2ProjectionEvent(undone, itemEvent(restored), partial);
+
+      expect(shown?.visibleTurnItems.map((row) => row.sourceItemId)).toEqual([
+        kept.id,
+        restored.id,
+      ]);
+    });
+
     it("shows a queued run that starts after a newer steer raised the watermark", () => {
       const steerItems = [
         runItem("item-steer-user", steerRunId, 3_000_001),

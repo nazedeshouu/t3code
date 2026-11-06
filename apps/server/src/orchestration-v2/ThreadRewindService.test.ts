@@ -13,6 +13,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,6 +24,7 @@ import {
   RunId,
   TextGenerationError,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -31,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 
 import { CheckpointStore } from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -671,6 +674,64 @@ it.effect("hands the summary to the next run, and a failed summary changes nothi
     const [dropped] = (yield* projections.getThreadRecords(threadId, ["contextHandoffs"]))
       .contextHandoffs;
     assert.equal(dropped?.status, "superseded");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo resends the restored items, which a client that loaded later never had", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 3, cwd });
+    const eventSink = yield* EventSink.EventSinkV2;
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const now = yield* DateTime.now;
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make("item:restored"),
+      threadId,
+      runId: RUN(3),
+      nodeId: NODE(3),
+      providerThreadId,
+      providerTurnId: TURN(3),
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 3_000_001,
+      status: "completed",
+      title: null,
+      updatedAt: now,
+      startedAt: now,
+      completedAt: now,
+      type: "assistant_message",
+      messageId: MessageId.make("message:reply"),
+      text: "Reply",
+      streaming: false,
+    };
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("seed:item"),
+          type: "turn-item.updated",
+          threadId,
+          runId: RUN(3),
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+    });
+    yield* service.rewind(rewindInput("conversation"));
+    const afterSequence = yield* eventSink.latestSequence({ threadId });
+
+    yield* service.undo({ threadId, rewindId: undoId });
+
+    const resent = yield* eventSink
+      .stream({ threadId, afterSequence, eventType: "turn-item.updated" })
+      .pipe(Stream.take(1), Stream.runCollect);
+    assert.equal(Array.from(resent)[0]?.event.type, "turn-item.updated");
+    assert.deepEqual(
+      Array.from(resent).flatMap(({ event }) =>
+        event.type === "turn-item.updated" ? [event.payload.id] : [],
+      ),
+      [item.id],
+    );
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 

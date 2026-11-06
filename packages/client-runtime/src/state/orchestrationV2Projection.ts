@@ -402,7 +402,13 @@ export function applyOrchestrationV2ProjectionEvent(
       return {
         ...next,
         visibleTurnItems: shouldShowLocalTurnItem(next, payload)
-          ? upsertVisibleTurnItem(visible, payload, partialTimeline, latestLocalTurnOrdinal)
+          ? // An item already held is loaded history coming back, as when a rewind is undone.
+            upsertVisibleTurnItem(
+              visible,
+              payload,
+              partialTimeline && itemIndex === -1,
+              latestLocalTurnOrdinal,
+            )
           : removeVisibleItem(visible.visibleTurnItems, payload.id),
       };
     }
