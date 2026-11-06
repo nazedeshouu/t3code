@@ -867,6 +867,7 @@ it.effect("offers a continuation for a later wake after a queued continuation is
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.void,
