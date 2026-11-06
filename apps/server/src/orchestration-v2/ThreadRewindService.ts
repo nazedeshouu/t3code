@@ -660,101 +660,87 @@ export const layer = Layer.effect(
 
       const previousRewindId = context.thread.rewindUndo?.rewindId;
       // The conversation stays untouched unless the provider's files are safely back, and a later
-      // failure puts them back. Git can't put anything back, and a native rollback can't be taken
-      // back, so git restores last: its failure is reported once the rollback is on record.
-      const gitRestore = yield* Effect.gen(function* () {
-        if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
-        const snapshot = rollsBack
-          ? yield* rollbackOnce(loaded, input, record, session)
-          : undefined;
-        const gitRestore = yield* Effect.exit(
-          engine?.type === "git"
-            ? checkpoints.restore({ scope: engine.scope, checkpoint: engine.checkpoint })
-            : Effect.void,
-        );
-        if (snapshot === undefined) yield* gitRestore;
-        yield* threadCommands.withLock(
-          threadId,
-          Effect.gen(function* () {
-            const thread = yield* projections.getThread(threadId);
-            const now = yield* DateTime.now;
-            const events: Array<OrchestrationV2DomainEvent> = [
-              {
-                id: yield* ids.allocate.event({ threadId }),
-                type: "thread.metadata-updated",
-                threadId,
-                providerInstanceId: thread.providerInstanceId,
-                occurredAt: now,
-                payload: {
-                  ...thread,
-                  lastRewindId: rewindId,
-                  rewindUndo: undoable
-                    ? {
-                        rewindId,
-                        mode: input.mode,
-                        messageId: input.messageId,
-                        removedMessageCount: rollsBack ? context.removedMessageCount : 0,
-                        filesRestored: record.filesRestored,
-                        createdAt: now,
-                      }
-                    : null,
-                  updatedAt: now,
-                },
+      // failure puts them back. A native rollback can't be taken back and git keeps no copy of the
+      // files, so git restores last and its failure is reported once the rollback is on record.
+      if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
+      const snapshot = rollsBack ? yield* rollbackOnce(loaded, input, record, session) : undefined;
+      const gitRestore = yield* Effect.exit(
+        engine?.type === "git"
+          ? checkpoints.restore({ scope: engine.scope, checkpoint: engine.checkpoint })
+          : Effect.void,
+      );
+      if (snapshot === undefined) yield* gitRestore;
+      yield* threadCommands.withLock(
+        threadId,
+        Effect.gen(function* () {
+          const thread = yield* projections.getThread(threadId);
+          const now = yield* DateTime.now;
+          const events: Array<OrchestrationV2DomainEvent> = [
+            {
+              id: yield* ids.allocate.event({ threadId }),
+              type: "thread.metadata-updated",
+              threadId,
+              providerInstanceId: thread.providerInstanceId,
+              occurredAt: now,
+              payload: {
+                ...thread,
+                lastRewindId: rewindId,
+                rewindUndo: undoable
+                  ? {
+                      rewindId,
+                      mode: input.mode,
+                      messageId: input.messageId,
+                      removedMessageCount: rollsBack ? context.removedMessageCount : 0,
+                      filesRestored: record.filesRestored,
+                      createdAt: now,
+                    }
+                  : null,
+                updatedAt: now,
               },
-            ];
-            if (snapshot !== undefined) {
-              events.push(...(yield* rollback.rollbackEvents({ ...loaded.rollback, snapshot })));
-            }
-            if (snapshot !== undefined && record.supersededSummaryId !== null) {
-              events.push(
-                ...(yield* handoffStatusEvents(
-                  threadId,
-                  record.supersededSummaryId,
-                  "superseded",
-                  now,
-                )),
-              );
-            }
-            if (snapshot !== undefined && record.summary !== null) {
-              const ordinals = context.runsToRollback.map((run) => run.ordinal);
-              events.push({
-                id: yield* ids.allocate.event({ threadId }),
-                type: "context-handoff.updated",
+            },
+          ];
+          if (snapshot !== undefined) {
+            events.push(...(yield* rollback.rollbackEvents({ ...loaded.rollback, snapshot })));
+          }
+          if (snapshot !== undefined && record.supersededSummaryId !== null) {
+            events.push(
+              ...(yield* handoffStatusEvents(
                 threadId,
-                runId: context.targetRun.id,
-                providerInstanceId: providerThread.providerInstanceId,
-                occurredAt: now,
-                payload: {
-                  id: record.summary.handoffId,
-                  transferId: null,
-                  threadId,
-                  targetRunId: context.targetRun.id,
-                  fromProviderThreadIds: [providerThread.id],
-                  toProviderThreadId: snapshot.providerThread.id,
-                  coveredRunOrdinals: { from: Math.min(...ordinals), to: Math.max(...ordinals) },
-                  strategy: "checkpoint_summary",
-                  status: "ready",
-                  summaryMessageId: null,
-                  summaryText: record.summary.text,
-                  createdByProviderInstanceId: providerThread.providerInstanceId,
-                  createdAt: now,
-                  updatedAt: now,
-                },
-              });
-            }
-            yield* eventSink.write({ events });
-          }),
-        );
-        return gitRestore;
-      }).pipe(
-        Effect.tapError(() =>
-          (restoresCode ? restoreFiles(threadId, rewindId, record) : Effect.void).pipe(
-            Effect.andThen(removeRecord(threadId, rewindId)),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to put a rewind back", { threadId, rewindId, cause }),
-            ),
-          ),
-        ),
+                record.supersededSummaryId,
+                "superseded",
+                now,
+              )),
+            );
+          }
+          if (snapshot !== undefined && record.summary !== null) {
+            const ordinals = context.runsToRollback.map((run) => run.ordinal);
+            events.push({
+              id: yield* ids.allocate.event({ threadId }),
+              type: "context-handoff.updated",
+              threadId,
+              runId: context.targetRun.id,
+              providerInstanceId: providerThread.providerInstanceId,
+              occurredAt: now,
+              payload: {
+                id: record.summary.handoffId,
+                transferId: null,
+                threadId,
+                targetRunId: context.targetRun.id,
+                fromProviderThreadIds: [providerThread.id],
+                toProviderThreadId: snapshot.providerThread.id,
+                coveredRunOrdinals: { from: Math.min(...ordinals), to: Math.max(...ordinals) },
+                strategy: "checkpoint_summary",
+                status: "ready",
+                summaryMessageId: null,
+                summaryText: record.summary.text,
+                createdByProviderInstanceId: providerThread.providerInstanceId,
+                createdAt: now,
+                updatedAt: now,
+              },
+            });
+          }
+          yield* eventSink.write({ events });
+        }),
       );
       if (!undoable) yield* expireRecord(threadId, rewindId).pipe(Effect.ignore);
       if (previousRewindId !== undefined && previousRewindId !== rewindId) {
@@ -764,6 +750,23 @@ export const layer = Layer.effect(
         Effect.mapError((cause) => refuse(threadId, CODE_NOT_RESTORED, cause)),
       );
     });
+
+    // Runs for any failure, since an earlier attempt that crashed may have restored files.
+    const putBack = (threadId: ThreadId, rewindId: CommandId) =>
+      readRecord(threadId, rewindId).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (record) =>
+              restoreFiles(threadId, rewindId, record).pipe(
+                Effect.andThen(removeRecord(threadId, rewindId)),
+              ),
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to put a rewind back", { threadId, rewindId, cause }),
+        ),
+      );
 
     const applyUndo = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
@@ -899,7 +902,10 @@ export const layer = Layer.effect(
           }
           return;
         }
-        yield* onThreadWorkspace(thread, applyRewind(input));
+        yield* onThreadWorkspace(
+          thread,
+          applyRewind(input).pipe(Effect.tapError(() => putBack(input.threadId, input.rewindId))),
+        );
       },
       (effect, input) => effect.pipe(failWith(input.threadId, REWIND_FAILED)),
     );
