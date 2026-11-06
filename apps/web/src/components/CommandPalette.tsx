@@ -71,6 +71,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
+  Undo2Icon,
   SettingsIcon,
   MonitorIcon,
   PinIcon,
@@ -260,6 +261,7 @@ import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { Checkbox } from "./ui/checkbox";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
+import { openRewindDock } from "./chat/ChatOverlayHosts";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
@@ -1390,6 +1392,25 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "preview.find",
       run: async () => {
         dispatchPreviewAction("find");
+        },
+      });
+    }
+
+  if (
+    activeThreadKey !== null &&
+    activeThread !== null &&
+    readEnvironmentScope(activeThread.environmentId, AuthOrchestrationOperateScope)
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:rewind-thread",
+      title: "Rewind",
+      description: "Go back to an earlier message",
+      searchTerms: ["rewind", "undo", "revert", "restore", "checkpoint", "edit from here"],
+      icon: <Undo2Icon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.rewind",
+      run: async () => {
+        openRewindDock(activeThreadKey);
       },
     });
   }
