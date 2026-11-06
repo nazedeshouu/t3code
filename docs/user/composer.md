@@ -191,7 +191,8 @@ On other providers a rewind can't be undone, and the options say so.
 
 Restoring code has limits. Restored files go back whole, so later changes to them by anyone are
 lost. Files changed only through Bash are not restored, and neither are edits made by subagents.
-Turns from before this feature show **No code restore**. Check the warning when another thread is
+Turns from before this feature show **No code restore**. After a restart, Claude can no longer
+restore code to turns before its latest compaction, so code options are hidden there. Check the warning when another thread is
 working in the same folder, since restoring can overwrite its changes.
 
 Rewinding does not undo external actions or separate provider memory. Summarizing only works from a
