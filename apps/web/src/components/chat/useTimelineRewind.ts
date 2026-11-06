@@ -145,7 +145,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
         await waitForThreadRewind(
           routeThreadRef,
           commandId,
-          (thread) => thread.rewindUndo?.rewindId === commandId,
+          (thread) => thread.lastRewindId === commandId,
           async () => {
             const result = await rewindThread({
               environmentId,

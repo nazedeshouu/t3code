@@ -183,9 +183,11 @@ shows where each one would take you. Pick a prompt, then pick what to restore:
 
 Options the provider or thread can't support are left out. A running turn is stopped first. After a
 conversation rewind, the prompt and its attachments return to the composer for editing and
-resending, below any draft you already had. To take it back, choose **Undo** on the notice above the
-composer. Undo stays available until you send the next message, including after a reload or from
-another device.
+resending, below any draft you already had.
+
+On Claude threads, choose **Undo** on the notice above the composer to take a rewind back. Undo
+stays available until you send the next message, including after a reload or from another device.
+On other providers a rewind can't be undone, and the options say so.
 
 Restoring code has limits. Restored files go back whole, so later changes to them by anyone are
 lost. Files changed only through Bash are not restored, and neither are edits made by subagents.

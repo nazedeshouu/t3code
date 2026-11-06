@@ -72,6 +72,8 @@ export const ThreadRewindPreview = Schema.Struct({
   /** Why code options are absent, when that is worth telling the user. */
   codeUnavailableReason: Schema.NullOr(TrimmedNonEmptyString),
   removedMessageCount: NonNegativeInt,
+  /** Whether the thread can undo this rewind. Only a provider that tracks its own edits can. */
+  undoable: Schema.Boolean,
   /** Another active thread is working in this directory. */
   sharedWorkspaceActive: Schema.Boolean,
 });

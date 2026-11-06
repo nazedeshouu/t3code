@@ -483,6 +483,7 @@ function Options(props: {
         })}
       </div>
       {preview?.codeUnavailableReason ? <Note>{preview.codeUnavailableReason}</Note> : null}
+      {preview?.undoable === false ? <Note>This can't be undone.</Note> : null}
       {query.error !== null ? <Note tone="error">{query.error}</Note> : null}
       {error !== null ? <Note tone="error">{error}</Note> : null}
       {warnsAboutCode ? (

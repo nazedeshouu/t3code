@@ -73,6 +73,7 @@ const REWIND_FAILED = "The rewind could not finish. Nothing was changed.";
 const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't be restored.";
 const EARLIER_SESSION = "This turn's file checkpoints stayed with an earlier provider session.";
 const NO_CONVERSATION = "This thread has no provider conversation to rewind.";
+const CODE_NOT_RESTORED = "The conversation was rewound, but the code could not be restored.";
 
 /** A refusal or failure the user sees through `rollbackFailure`. Retrying it would not help. */
 export class ThreadRewindError extends Schema.TaggedError<ThreadRewindError>()(
@@ -103,7 +104,6 @@ const StashedFile = Schema.Struct({
 const RewindUndoRecord = Schema.Struct({
   filesRestored: Schema.Number,
   files: Schema.Array(StashedFile),
-  gitUndoRef: Schema.NullOr(CheckpointRef),
   scope: Schema.NullOr(OrchestrationV2CheckpointScopeJson),
   /** Null when the conversation was left alone. */
   providerThread: Schema.NullOr(OrchestrationV2ProviderThreadJson),
@@ -302,30 +302,10 @@ export const layer = Layer.effect(
               }),
         { discard: true },
       );
-      if (record.gitUndoRef !== null && record.scope !== null) {
-        yield* checkpointStore.restoreCheckpoint({
-          cwd: record.scope.cwd,
-          checkpointRef: record.gitUndoRef,
-          fallbackToHead: false,
-        });
-      }
     });
 
-    const removeRecord = Effect.fnUntraced(function* (
-      threadId: ThreadId,
-      rewindId: CommandId,
-      record: RewindUndoRecord,
-    ) {
-      if (record.gitUndoRef !== null && record.scope !== null) {
-        yield* checkpointStore
-          .deleteCheckpointRefs({ cwd: record.scope.cwd, checkpointRefs: [record.gitUndoRef] })
-          .pipe(Effect.ignore);
-      }
-      yield* fileSystem.remove(stashDirectory(threadId, rewindId), {
-        recursive: true,
-        force: true,
-      });
-    });
+    const removeRecord = (threadId: ThreadId, rewindId: CommandId) =>
+      fileSystem.remove(stashDirectory(threadId, rewindId), { recursive: true, force: true });
 
     const expireRecord = Effect.fnUntraced(function* (threadId: ThreadId, rewindId: CommandId) {
       const record = yield* readRecord(threadId, rewindId);
@@ -335,7 +315,7 @@ export const layer = Layer.effect(
           .deleteStaleRefs({ scope: record.value.scope, checkpoints: record.value.checkpoints })
           .pipe(Effect.ignore);
       }
-      yield* removeRecord(threadId, rewindId, record.value);
+      yield* removeRecord(threadId, rewindId);
     });
 
     const load = Effect.fnUntraced(function* (threadId: ThreadId, messageId: MessageId) {
@@ -577,22 +557,11 @@ export const layer = Layer.effect(
           handoff.delivery === undefined,
       );
       let filesChanged: ReadonlyArray<string> = [];
-      let filesRestored = 0;
-      let gitUndoRef: CheckpointRef | null = null;
       if (engine?.type === "provider") {
         filesChanged = (yield* providerDryRun(loaded, engine, session)).filesChanged;
-        filesRestored = filesChanged.length;
-      } else if (engine?.type === "git") {
-        gitUndoRef = CheckpointRef.make(`${UNDO_REFS_PREFIX}/${pathKey(input.rewindId)}`);
-        yield* checkpointStore.captureCheckpoint({
-          cwd: engine.scope.cwd,
-          checkpointRef: gitUndoRef,
-        });
-        filesRestored = (yield* diffGit(engine, gitUndoRef)).paths.length;
       }
       return yield* writeRecord(input.threadId, input.rewindId, filesChanged, {
-        filesRestored,
-        gitUndoRef,
+        filesRestored: filesChanged.length,
         scope: context.scope ?? null,
         providerThread: rollsBack ? providerThread : null,
         runs: rollsBack ? context.runsToRollback : [],
@@ -605,13 +574,9 @@ export const layer = Layer.effect(
 
     const restoreCode = Effect.fnUntraced(function* (
       loaded: LoadedRewind,
-      engine: Exclude<CodeEngine, { readonly type: "unavailable" }>,
+      engine: Extract<CodeEngine, { readonly type: "provider" }>,
       session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ) {
-      if (engine.type === "git") {
-        yield* checkpoints.restore({ scope: engine.scope, checkpoint: engine.checkpoint });
-        return;
-      }
       const threadId = loaded.context.thread.id;
       if (session.rewindFiles === undefined) return yield* refuse(threadId, NO_FILE_CHECKPOINT);
       const result = yield* session.rewindFiles({
@@ -629,7 +594,8 @@ export const layer = Layer.effect(
     ) {
       const { threadId, rewindId } = input;
       const loaded: LoadedRewind = yield* load(threadId, input.messageId);
-      const { context, providerThread } = loaded;
+      const { context, providerThread, capabilities } = loaded;
+      const undoable = capabilities.checkpointing.providerCanRewindFiles === true;
 
       const restoresCode = input.mode === "code" || input.mode === "code_and_conversation";
       const rollsBack = input.mode !== "code";
@@ -647,13 +613,20 @@ export const layer = Layer.effect(
         : yield* createRecord(loaded, input, engine, session);
 
       const previousRewindId = context.thread.rewindUndo?.rewindId;
-      // The conversation stays untouched unless the code is safely back, and a later failure
-      // puts the code back, so a failed rewind leaves the thread as it was.
-      yield* Effect.gen(function* () {
-        if (engine !== undefined) yield* restoreCode(loaded, engine, session);
+      // The conversation stays untouched unless the provider's files are safely back, and a later
+      // failure puts them back. Git can't put anything back, and a native rollback can't be taken
+      // back, so git restores last: its failure is reported once the rollback is on record.
+      const gitRestore = yield* Effect.gen(function* () {
+        if (engine?.type === "provider") yield* restoreCode(loaded, engine, session);
         const snapshot = rollsBack
           ? yield* rollback.rollbackConversation({ ...loaded.rollback, session })
           : undefined;
+        const gitRestore = yield* Effect.exit(
+          engine?.type === "git"
+            ? checkpoints.restore({ scope: engine.scope, checkpoint: engine.checkpoint })
+            : Effect.void,
+        );
+        if (snapshot === undefined) yield* gitRestore;
         yield* threadCommands.withLock(
           threadId,
           Effect.gen(function* () {
@@ -668,14 +641,17 @@ export const layer = Layer.effect(
                 occurredAt: now,
                 payload: {
                   ...thread,
-                  rewindUndo: {
-                    rewindId,
-                    mode: input.mode,
-                    messageId: input.messageId,
-                    removedMessageCount: rollsBack ? context.removedMessageCount : 0,
-                    filesRestored: record.filesRestored,
-                    createdAt: now,
-                  },
+                  lastRewindId: rewindId,
+                  rewindUndo: undoable
+                    ? {
+                        rewindId,
+                        mode: input.mode,
+                        messageId: input.messageId,
+                        removedMessageCount: rollsBack ? context.removedMessageCount : 0,
+                        filesRestored: record.filesRestored,
+                        createdAt: now,
+                      }
+                    : null,
                   updatedAt: now,
                 },
               },
@@ -723,19 +699,24 @@ export const layer = Layer.effect(
             yield* eventSink.write({ events });
           }),
         );
+        return gitRestore;
       }).pipe(
         Effect.tapError(() =>
           (restoresCode ? restoreFiles(threadId, rewindId, record) : Effect.void).pipe(
-            Effect.andThen(removeRecord(threadId, rewindId, record)),
+            Effect.andThen(removeRecord(threadId, rewindId)),
             Effect.catchCause((cause) =>
               Effect.logWarning("Failed to put a rewind back", { threadId, rewindId, cause }),
             ),
           ),
         ),
       );
+      if (!undoable) yield* expireRecord(threadId, rewindId).pipe(Effect.ignore);
       if (previousRewindId !== undefined && previousRewindId !== rewindId) {
-        yield* expireRecord(threadId, previousRewindId);
+        yield* expireRecord(threadId, previousRewindId).pipe(Effect.ignore);
       }
+      yield* gitRestore.pipe(
+        Effect.mapError((cause) => refuse(threadId, CODE_NOT_RESTORED, cause)),
+      );
     });
 
     const applyUndo = Effect.fnUntraced(function* (input: {
@@ -850,7 +831,7 @@ export const layer = Layer.effect(
           yield* eventSink.write({ events });
         }),
       );
-      yield* removeRecord(threadId, rewindId, record);
+      yield* removeRecord(threadId, rewindId);
     });
 
     const onThreadWorkspace = <A, E, R>(
@@ -865,7 +846,13 @@ export const layer = Layer.effect(
       function* (input: Parameters<ThreadRewindServiceShape["rewind"]>[0]) {
         const thread = yield* projections.getThread(input.threadId);
         // At-least-once delivery: the run is already rolled back, so `load` would refuse this.
-        if (thread.rewindUndo?.rewindId === input.rewindId) return;
+        if (thread.lastRewindId === input.rewindId) {
+          // A one-way rewind may have stopped before dropping its record.
+          if (thread.rewindUndo?.rewindId !== input.rewindId) {
+            yield* expireRecord(input.threadId, input.rewindId);
+          }
+          return;
+        }
         yield* onThreadWorkspace(thread, applyRewind(input));
       },
       (effect, input) => effect.pipe(failWith(input.threadId, REWIND_FAILED)),
@@ -950,6 +937,7 @@ export const layer = Layer.effect(
           code: code.stats,
           codeUnavailableReason: code.reason,
           removedMessageCount: context.removedMessageCount,
+          undoable: loaded.capabilities.checkpointing.providerCanRewindFiles === true,
           sharedWorkspaceActive:
             directory === undefined
               ? false

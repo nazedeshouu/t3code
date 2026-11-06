@@ -526,6 +526,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
       }),
     ),
   ),
+  /** The latest rewind to finish. A one-way rewind leaves no `rewindUndo` to show it did. */
+  lastRewindId: Schema.optional(CommandId),
   rewindUndo: Schema.optional(Schema.NullOr(ThreadRewindUndo)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
