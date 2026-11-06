@@ -791,3 +791,43 @@ describe("an Arabic line", () => {
     );
   });
 });
+
+describe("ComposerPromptEditor Escape", () => {
+  const pressEscape = (container: HTMLElement) => {
+    const event = new KeyboardEvent("keydown", {
+      key: "Escape",
+      // ProseMirror reads the code, which a synthetic event otherwise leaves at 0.
+      keyCode: 27,
+      bubbles: true,
+      cancelable: true,
+    });
+    editorIn(container).view.dom.dispatchEvent(event);
+    return event;
+  };
+
+  it("leaves an Escape nothing used for the shortcut dispatcher", async () => {
+    await using mounted = await mountEditor("draft");
+
+    expect(pressEscape(mounted.container).defaultPrevented).toBe(false);
+  });
+
+  it("still consumes an Escape a command handler used", async () => {
+    await using screen = await render(
+      <ComposerPromptEditor
+        editorRef={createRef<ComposerPromptEditorHandle>()}
+        value=""
+        cursor={0}
+        richTextEnabled
+        contextRecords={new Map()}
+        skills={[]}
+        disabled={false}
+        placeholder=""
+        onChange={() => {}}
+        onPaste={() => {}}
+        onCommandKeyDown={(key) => key === "Escape"}
+      />,
+    );
+
+    expect(pressEscape(screen.container).defaultPrevented).toBe(true);
+  });
+});

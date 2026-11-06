@@ -1109,6 +1109,17 @@ function ComposerPromptEditorTiptapInner(
       editable: !disabled,
       editorProps: {
         attributes: editorAttributes,
+        handleDOMEvents: {
+          // ProseMirror prevents every Escape it sees, even one nothing here used, and the shortcut
+          // dispatcher reads that as consumed.
+          keydown: (view, event) => {
+            if (event.key !== "Escape" || event.isComposing || view.composing) return false;
+            if (view.someProp("handleKeyDown", (handle) => handle(view, event))) {
+              event.preventDefault();
+            }
+            return true;
+          },
+        },
         handleKeyDown: (view, event) => {
           // In a right-to-left line the start is on the right.
           const backArrow = caretLineDirection(view.state) === "rtl" ? "ArrowRight" : "ArrowLeft";
