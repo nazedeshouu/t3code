@@ -5,6 +5,7 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
+  ContextHandoffId,
   EventId,
   MessageId,
   NodeId,
@@ -970,6 +971,101 @@ it.effect("a later conversation rewind replaces an undelivered summary until it 
 
     yield* service.undo({ threadId, rewindId: conversationRewind });
     assert.equal(yield* handoffStatus, "ready");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+const seedDeliveredSummary = Effect.gen(function* () {
+  const eventSink = yield* EventSink.EventSinkV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const now = yield* DateTime.now;
+  const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
+  yield* eventSink.write({
+    events: [
+      {
+        id: EventId.make("seed:summarized-run"),
+        type: "run.updated",
+        threadId,
+        runId: RUN(2),
+        occurredAt: now,
+        payload: { ...runs[1]!, status: "rolled_back" },
+      },
+      {
+        id: EventId.make("seed:summary"),
+        type: "context-handoff.updated",
+        threadId,
+        runId: RUN(2),
+        occurredAt: now,
+        payload: {
+          id: ContextHandoffId.make("handoff:delivered"),
+          threadId,
+          targetRunId: RUN(2),
+          fromProviderThreadIds: [providerThreadId],
+          toProviderThreadId: providerThreadId,
+          coveredRunOrdinals: { from: 2, to: 2 },
+          strategy: "checkpoint_summary",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: "Earlier work.",
+          delivery: { nativeThreadId: "native:rewind", status: "inline", itemIds: [] },
+          createdByProviderInstanceId: instanceId,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+    ],
+  });
+});
+
+const deliveredHandoff = Effect.gen(function* () {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const { contextHandoffs } = yield* projections.getThreadRecords(threadId, ["contextHandoffs"]);
+  return contextHandoffs.find((handoff) => handoff.id === "handoff:delivered");
+});
+
+it.effect("rewinding past the run that received a summary delivers it again", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 3, cwd });
+    yield* seedDeliveredSummary;
+    const service = yield* ThreadRewindService.ThreadRewindService;
+
+    yield* service.rewind(rewindInput("conversation", 3));
+    const pending = yield* deliveredHandoff;
+    assert.equal(pending?.status, "ready");
+    assert.isUndefined(pending?.delivery);
+
+    yield* service.undo({ threadId, rewindId: undoId });
+    assert.equal((yield* deliveredHandoff)?.delivery?.status, "inline");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("a rewind to before a delivered summary's turns drops the summary", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 3, cwd });
+    yield* seedDeliveredSummary;
+    const service = yield* ThreadRewindService.ThreadRewindService;
+
+    yield* service.rewind(rewindInput("conversation", 1));
+    assert.equal((yield* deliveredHandoff)?.status, "superseded");
+
+    yield* service.undo({ threadId, rewindId: undoId });
+    assert.equal((yield* deliveredHandoff)?.status, "ready");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("a rewind that keeps the run which received a summary leaves it delivered", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 4, cwd });
+    yield* seedDeliveredSummary;
+    const service = yield* ThreadRewindService.ThreadRewindService;
+
+    yield* service.rewind(rewindInput("conversation", 4));
+    assert.equal((yield* deliveredHandoff)?.delivery?.status, "inline");
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
