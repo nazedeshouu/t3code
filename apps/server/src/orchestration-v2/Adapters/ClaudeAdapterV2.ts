@@ -4511,6 +4511,8 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
+  // A failed result before any prompt, such as a refused resume. The process exits after it.
+  bootFailure: SDKResultMessage | null;
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // The CLI may fall back from the requested mode on its first init frame.
@@ -9080,6 +9082,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (yield* Ref.get(activeTurn)) ??
             (yield* settledTurnForSubagentFrame(liveQuery.nativeThreadId, message));
           if (context === null) {
+            if (
+              liveQuery.lastTurn === null &&
+              message.type === "result" &&
+              message.subtype !== "success"
+            ) {
+              liveQuery.bootFailure = message;
+              return;
+            }
             yield* applyWorkflowProgressWithoutTurn(message);
             // Buffer wake evidence before clearing the task from the roster.
             if (message.type === "system" && message.subtype === "task_notification") {
@@ -11180,6 +11190,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             selection: compiledSelection,
             closed,
             lastTurn: null,
+            bootFailure: null,
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
@@ -11490,7 +11501,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             });
             if (userMessage !== null) {
-              yield* attachTurn;
+              const bootFailure = yield* sdkMessageLock.withPermits(1)(
+                attachTurn.pipe(Effect.map(() => querySession.bootFailure)),
+              );
+              if (bootFailure !== null) {
+                const completedAt = yield* DateTime.now;
+                const failure = providerFailureFromResult(bootFailure, completedAt);
+                yield* finalizeActiveTurn({
+                  context,
+                  status: "failed",
+                  completedAt,
+                  ...(failure === null ? {} : { failure }),
+                });
+                return;
+              }
               yield* startUserTurnForWakeReports(nativeThreadId);
               yield* Effect.uninterruptibleMask((restore) =>
                 restore(
