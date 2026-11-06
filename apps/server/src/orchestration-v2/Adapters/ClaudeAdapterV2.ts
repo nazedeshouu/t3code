@@ -903,7 +903,6 @@ export interface ClaudeAgentSdkLoggedQueryOptions {
   readonly sessionId?: string;
   readonly resume?: string;
   readonly resumeSessionAt?: ClaudeAgentSdkQueryOptions["resumeSessionAt"];
-  readonly resumeDropsTurn?: ClaudeAgentSdkQueryOptions["resumeDropsTurn"];
   readonly cwd?: ClaudeAgentSdkQueryOptions["cwd"];
   readonly allowedTools?: ClaudeAgentSdkQueryOptions["allowedTools"];
   readonly disallowedTools?: ClaudeAgentSdkQueryOptions["disallowedTools"];
@@ -1043,7 +1042,6 @@ export function loggedClaudeQueryOptions(
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     ...(options.resume === undefined ? {} : { resume: options.resume }),
     ...(options.resumeSessionAt === undefined ? {} : { resumeSessionAt: options.resumeSessionAt }),
-    ...(options.resumeDropsTurn === undefined ? {} : { resumeDropsTurn: options.resumeDropsTurn }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.allowedTools === undefined ? {} : { allowedTools: options.allowedTools }),
     ...(options.disallowedTools === undefined ? {} : { disallowedTools: options.disallowedTools }),
@@ -1774,7 +1772,6 @@ export function makeClaudeQueryOptions(input: {
   readonly title?: string;
   readonly resume: boolean;
   readonly resumeSessionAt?: string;
-  readonly resumeDropsTurn?: string;
   readonly cwd: string | null;
   readonly attachmentsDir?: string;
   readonly settings?: ClaudeSettings;
@@ -1872,7 +1869,6 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     enableFileCheckpointing: true,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
-    ...(input.resumeDropsTurn === undefined ? {} : { resumeDropsTurn: input.resumeDropsTurn }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
@@ -2380,31 +2376,6 @@ const resolveClaudeRollbackResumeSessionAt = Effect.fn(
     }
   }
 });
-
-/**
- * `resumeDropsTurn` declares a single turn and refuses anything else past the cut, including a
- * second turn or an interrupted kept turn's tool results, so arm it only for that exact shape.
- */
-const claudeRollbackDropsPrompt = (
-  input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput,
-): string | undefined => {
-  if (input.providerThread.nativeConversationHeadRef !== null) return undefined;
-  const kept = input.target.type === "provider_turn" ? input.target.providerTurn : undefined;
-  if (kept !== undefined && kept.status !== "completed") return undefined;
-  const dropped = input.providerThreadTurns.filter((turn) => turn.ordinal > (kept?.ordinal ?? 0));
-  return dropped.length === 1 ? dropped[0]?.nativePromptRef : undefined;
-};
-
-const withoutClaudeConversationHead = (
-  providerThread: OrchestrationV2ProviderThread,
-): Pick<OrchestrationV2ProviderThread, "nativeConversationHeadRef" | "nativeMetadata"> => {
-  const { conversationHeadDropsPrompt: _dropped, ...nativeMetadata } =
-    providerThread.nativeMetadata ?? {};
-  return {
-    nativeConversationHeadRef: null,
-    nativeMetadata: providerThread.nativeMetadata == null ? null : nativeMetadata,
-  };
-};
 
 /** `rewindFiles` counts lines from the restore's side, which mirrors what the turn did. */
 const claudeTurnCodeStats = (
@@ -3961,9 +3932,6 @@ const awaitClaudeUserInputAnswers = Effect.fn("awaitClaudeUserInputAnswers")(fun
   return yield* Effect.raceFirst(Deferred.await(answers), cancellation);
 });
 
-const CLAUDE_RESUME_REJECTED_PREFIX = "Resume rejected by --resume-drops-turn:";
-const CLAUDE_RESUME_REJECTED_CODE = "resume_rejected";
-
 /** Exclude CLI-internal "[ede_diagnostic] ..." telemetry from error banners. */
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
   const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
@@ -4201,15 +4169,6 @@ function providerFailureFromResult(
       ? "usage_limit"
       : "provider_error";
   const listedError = resultUserFacingError(message);
-  // Deterministic, so the pin must go: a retry with the same fork target fails forever.
-  if (listedError?.startsWith(CLAUDE_RESUME_REJECTED_PREFIX)) {
-    return makeProviderFailure({
-      class: "provider_error",
-      code: CLAUDE_RESUME_REJECTED_CODE,
-      message:
-        "Claude refused the rewind because the dropped messages include activity T3 Code did not attribute to them. The full conversation was kept; send your message again to continue from it.",
-    });
-  }
   const apiErrorMessage =
     message.subtype === "success" &&
     message.terminal_reason === "api_error" &&
@@ -4511,8 +4470,6 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
-  // A failed result before any prompt, such as a refused resume. The process exits after it.
-  bootFailure: SDKResultMessage | null;
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // The CLI may fall back from the requested mode on its first init frame.
@@ -8300,9 +8257,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       );
                 // A stopped turn that wrote to the transcript moved past the pinned head.
                 const clearConversationHead =
-                  (input.status === "completed" ||
-                    input.context.nativeMessageCursor !== null ||
-                    input.failure?.code === CLAUDE_RESUME_REJECTED_CODE) &&
+                  (input.status === "completed" || input.context.nativeMessageCursor !== null) &&
                   input.context.input.providerThread.nativeConversationHeadRef !== null;
                 const goal =
                   nativeThreadId === null ? undefined : goalsByNativeThread.get(nativeThreadId);
@@ -8330,9 +8285,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 const providerThread: OrchestrationV2ProviderThread = {
                   ...input.context.input.providerThread,
                   providerSessionId: session.id,
-                  ...(clearConversationHead
-                    ? withoutClaudeConversationHead(input.context.input.providerThread)
-                    : {}),
+                  ...(clearConversationHead ? { nativeConversationHeadRef: null } : {}),
                   ...(nativeThreadId !== null && goalsByNativeThread.has(nativeThreadId)
                     ? { goal: goalsByNativeThread.get(nativeThreadId) ?? null }
                     : {}),
@@ -9082,14 +9035,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             (yield* Ref.get(activeTurn)) ??
             (yield* settledTurnForSubagentFrame(liveQuery.nativeThreadId, message));
           if (context === null) {
-            if (
-              liveQuery.lastTurn === null &&
-              message.type === "result" &&
-              message.subtype !== "success"
-            ) {
-              liveQuery.bootFailure = message;
-              return;
-            }
             yield* applyWorkflowProgressWithoutTurn(message);
             // Buffer wake evidence before clearing the task from the roster.
             if (message.type === "system" && message.subtype === "task_notification") {
@@ -11102,13 +11047,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             title: turnInput.appThread.title,
             resume: shouldResume,
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
-            ...(resumeSessionAt === undefined ||
-            turnInput.providerThread.nativeMetadata?.conversationHeadDropsPrompt === undefined
-              ? {}
-              : {
-                  resumeDropsTurn:
-                    turnInput.providerThread.nativeMetadata.conversationHeadDropsPrompt,
-                }),
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
@@ -11190,7 +11128,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             selection: compiledSelection,
             closed,
             lastTurn: null,
-            bootFailure: null,
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
@@ -11501,20 +11438,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             });
             if (userMessage !== null) {
-              const bootFailure = yield* sdkMessageLock.withPermits(1)(
-                attachTurn.pipe(Effect.map(() => querySession.bootFailure)),
-              );
-              if (bootFailure !== null) {
-                const completedAt = yield* DateTime.now;
-                const failure = providerFailureFromResult(bootFailure, completedAt);
-                yield* finalizeActiveTurn({
-                  context,
-                  status: "failed",
-                  completedAt,
-                  ...(failure === null ? {} : { failure }),
-                });
-                return;
-              }
+              yield* attachTurn;
               yield* startUserTurnForWakeReports(nativeThreadId);
               yield* Effect.uninterruptibleMask((restore) =>
                 restore(
@@ -12401,7 +12325,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
               const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
-              const dropsPrompt = claudeRollbackDropsPrompt(rollbackInput);
 
               if (rollbackInput.target.type === "thread_start" && resumeSessionAt === null) {
                 const resetNativeThreadId = yield* queryRunner.allocateSessionId;
@@ -12433,24 +12356,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 providerThread: {
                   ...rollbackInput.providerThread,
                   providerSessionId: input.providerSessionId,
-                  ...withoutClaudeConversationHead(rollbackInput.providerThread),
-                  ...(resumeSessionAt === null
-                    ? {}
-                    : {
-                        nativeConversationHeadRef: {
+                  nativeConversationHeadRef:
+                    resumeSessionAt === null
+                      ? null
+                      : {
                           driver: CLAUDE_PROVIDER,
                           nativeId: resumeSessionAt,
                           strength: "weak" as const,
                         },
-                        ...(dropsPrompt === undefined
-                          ? {}
-                          : {
-                              nativeMetadata: {
-                                ...rollbackInput.providerThread.nativeMetadata,
-                                conversationHeadDropsPrompt: dropsPrompt,
-                              },
-                            }),
-                      }),
                   status: "idle" as const,
                   lastRunOrdinal: rollbackInput.target.appRunOrdinal,
                   updatedAt: now,

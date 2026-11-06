@@ -974,17 +974,19 @@ export const layer = Layer.effect(
         const rows = yield* projections.getRewindTargetRows(threadId);
         return {
           targets: rows.map((row) => {
-            const stats = providerEngine
-              ? row.promptTurn?.providerThreadId === thread.activeProviderThreadId
-                ? row.promptTurn?.codeStats
-                : undefined
-              : row.checkpoint;
+            const promptTurn =
+              row.promptTurn?.providerThreadId === thread.activeProviderThreadId
+                ? row.promptTurn
+                : undefined;
+            const stats = providerEngine ? promptTurn?.codeStats : row.checkpoint;
             const code: ThreadRewindTurnCode =
-              stats === undefined
-                ? { state: "unavailable" }
-                : stats.filesChanged === 0
+              stats !== undefined
+                ? stats.filesChanged === 0
                   ? { state: "unchanged" }
-                  : { state: "changed", stats };
+                  : { state: "changed", stats }
+                : providerEngine && promptTurn !== undefined
+                  ? { state: "pending" }
+                  : { state: "unavailable" };
             return {
               messageId: row.messageId,
               runId: row.runId,

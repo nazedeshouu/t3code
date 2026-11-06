@@ -188,6 +188,8 @@ const seed = Effect.fnUntraced(function* (input: {
   readonly worktreePath?: string | null;
   readonly checkpointStatus?: "ready" | "missing";
   readonly promptRefs?: boolean;
+  /** The last run is still going: running, with a prompt but no stats yet. */
+  readonly lastRunActive?: boolean;
 }) {
   const eventSink = yield* EventSink.EventSinkV2;
   const now = yield* DateTime.now;
@@ -288,6 +290,7 @@ const seed = Effect.fnUntraced(function* (input: {
     }),
   ];
   for (let ordinal = 1; ordinal <= input.runs; ordinal++) {
+    const active = input.lastRunActive === true && ordinal === input.runs;
     const run: OrchestrationV2Run = {
       id: RUN(ordinal),
       threadId,
@@ -298,11 +301,11 @@ const seed = Effect.fnUntraced(function* (input: {
       userMessageId: MESSAGE(ordinal),
       rootNodeId: NODE(ordinal),
       activeAttemptId: ATTEMPT(ordinal),
-      status: "completed",
+      status: active ? "running" : "completed",
       requestedAt: now,
       startedAt: now,
-      completedAt: now,
-      checkpointId: CHECKPOINT(ordinal),
+      completedAt: active ? null : now,
+      checkpointId: active ? null : CHECKPOINT(ordinal),
       contextHandoffId: null,
     };
     const providerTurn: OrchestrationV2ProviderTurn = {
@@ -315,10 +318,10 @@ const seed = Effect.fnUntraced(function* (input: {
       status: "completed",
       startedAt: now,
       completedAt: now,
-      ...(input.promptRefs === false
+      ...(input.promptRefs === false ? {} : { nativePromptRef: `prompt:${ordinal}` }),
+      ...(input.promptRefs === false || active
         ? {}
         : {
-            nativePromptRef: `prompt:${ordinal}`,
             codeStats:
               ordinal === 2
                 ? { filesChanged: 0, insertions: 0, deletions: 0, primaryPath: null }
@@ -841,6 +844,23 @@ it.effect("lists every visible prompt oldest first with what each turn did", () 
       [
         [RUN(1), "Prompt 1", "changed"],
         [RUN(2), "Prompt 2", "unchanged"],
+      ],
+    );
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("lists a running prompt, with stats pending", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd, lastRunActive: true });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const { targets } = yield* service.listTargets(threadId);
+    assert.deepEqual(
+      targets.map((target) => [target.runId, target.code.state]),
+      [
+        [RUN(1), "changed"],
+        [RUN(2), "pending"],
       ],
     );
   }).pipe(scoped, Effect.provide(makeLayer(fake)));

@@ -3171,8 +3171,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly settings?: ClaudeSettings;
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
-    /** Frames a reopened query emits on its own, before any prompt. */
-    readonly framesOnReopen?: ReadonlyArray<SDKMessage>;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly promptSuggestions?: boolean;
@@ -3278,7 +3276,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               );
               if (options?.freshQueueOnReopen === true && processQueues.length > 0) {
                 processQueues.push(processMessages);
-                yield* Queue.offerAll(processMessages, options.framesOnReopen ?? []);
                 return {
                   messages,
                   offer: (message: SDKUserMessage) =>
@@ -6936,155 +6933,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         assert.equal(refused._tag, "ProviderAdapterRewindFilesError");
-      }).pipe(Effect.provide(harnessLayer)),
-    );
-
-    it.effect("fails the turn when the CLI refuses the resume before reading its prompt", () =>
-      Effect.gen(function* () {
-        const framesOnReopen: Array<SDKMessage> = [];
-        const harness = yield* makeWakeHarnessWithOptions({
-          close: (sdkMessages) => Queue.shutdown(sdkMessages),
-          freshQueueOnReopen: true,
-          framesOnReopen,
-        });
-        const first = yield* runTurn(harness, {
-          id: "first",
-          providerThread: harness.providerThread,
-          ordinal: 1,
-        });
-        const second = yield* runTurn(harness, {
-          id: "second",
-          providerThread: harness.providerThread,
-          ordinal: 2,
-        });
-        const { providerThread } = yield* harness.runtime.rollbackThread({
-          providerThread: harness.providerThread,
-          target: {
-            type: "provider_turn",
-            checkpointId: CheckpointId.make("checkpoint-kept"),
-            appRunOrdinal: first.ordinal,
-            providerTurn: first,
-          },
-          providerThreadTurns: [first, second],
-        });
-        framesOnReopen.push(
-          makeResultFrame({
-            uuid: "refused-at-boot",
-            result: "",
-            subtype: "error_during_execution",
-            isError: true,
-            errors: [
-              "Resume rejected by --resume-drops-turn: resuming at x would discard entries not attributable to turn y",
-            ],
-          }),
-        );
-        const offeredBefore = harness.offeredMessages.length;
-
-        yield* harness.runtime.startTurn({
-          ...makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("after-rollback"),
-            text: "Continue from here.",
-            attachments: [],
-          }),
-          providerTurnOrdinal: 3,
-        });
-
-        const terminal = yield* Queue.take(harness.terminalReceipts);
-        assert.equal(terminal.status, "failed");
-        assert.equal(terminal.failure?.code, "resume_rejected");
-        assert.lengthOf(harness.continuationRequests, 0);
-        assert.lengthOf(harness.offeredMessages, offeredBefore);
-      }).pipe(Effect.provide(harnessLayer)),
-    );
-
-    it.effect("declares the dropped turn only when it is the whole tail", () =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({
-          close: (sdkMessages) => Queue.shutdown(sdkMessages),
-          freshQueueOnReopen: true,
-        });
-        const first = yield* runTurn(harness, {
-          id: "first",
-          providerThread: harness.providerThread,
-          ordinal: 1,
-        });
-        const second = yield* runTurn(harness, {
-          id: "second",
-          providerThread: harness.providerThread,
-          ordinal: 2,
-        });
-        const third = yield* runTurn(harness, {
-          id: "third",
-          providerThread: harness.providerThread,
-          ordinal: 3,
-        });
-        const rollbackAfter = (
-          kept: typeof first,
-          providerThreadTurns: ReadonlyArray<typeof first>,
-          providerThread = harness.providerThread,
-        ) =>
-          harness.runtime
-            .rollbackThread({
-              providerThread,
-              target: {
-                type: "provider_turn",
-                checkpointId: CheckpointId.make("checkpoint-kept"),
-                appRunOrdinal: kept.ordinal,
-                providerTurn: kept,
-              },
-              providerThreadTurns,
-            })
-            .pipe(Effect.map((snapshot) => snapshot.providerThread));
-        const all = [first, second, third];
-
-        const oneTurn = yield* rollbackAfter(second, all);
-        assert.equal(oneTurn.nativeMetadata?.conversationHeadDropsPrompt, third.nativePromptRef);
-        const twoTurns = yield* rollbackAfter(first, all);
-        assert.isUndefined(twoTurns.nativeMetadata?.conversationHeadDropsPrompt);
-        const interruptedKept = yield* rollbackAfter({ ...second, status: "interrupted" }, all);
-        assert.isUndefined(interruptedKept.nativeMetadata?.conversationHeadDropsPrompt);
-        const alreadyPinned = yield* rollbackAfter(first, [first, second], oneTurn);
-        assert.isUndefined(alreadyPinned.nativeMetadata?.conversationHeadDropsPrompt);
-
-        yield* harness.runtime.startTurn({
-          ...makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: oneTurn,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("after-rollback"),
-            text: "Continue from here.",
-            attachments: [],
-          }),
-          providerTurnOrdinal: 4,
-        });
-        assert.equal(harness.getOpenedOptions()?.resumeSessionAt, second.nativeTurnRef?.nativeId);
-        assert.equal(harness.getOpenedOptions()?.resumeDropsTurn, third.nativePromptRef);
-
-        yield* harness.offerAndWait(
-          makeResultFrame({
-            uuid: "refused-result",
-            result: "",
-            subtype: "error_during_execution",
-            isError: true,
-            errors: [
-              "Resume rejected by --resume-drops-turn: resuming at x would discard entries not attributable to turn y",
-            ],
-          }),
-        );
-        const terminal = yield* Queue.take(harness.terminalReceipts);
-        assert.equal(terminal.status, "failed");
-        assert.equal(terminal.failure?.code, "resume_rejected");
-        assert.include(terminal.failure?.message ?? "", "The full conversation was kept");
-        const cleared = harness.events.findLast(
-          (event) => event.type === "provider_thread.updated",
-        );
-        assert.equal(cleared?.type, "provider_thread.updated");
-        if (cleared?.type !== "provider_thread.updated") return;
-        assert.isNull(cleared.providerThread.nativeConversationHeadRef);
-        assert.isUndefined(cleared.providerThread.nativeMetadata?.conversationHeadDropsPrompt);
       }).pipe(Effect.provide(harnessLayer)),
     );
   });

@@ -5764,7 +5764,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND checkpoint.thread_id = run.thread_id
           LEFT JOIN json_each(checkpoint.payload_json, '$.files') AS file
           WHERE run.thread_id = ${threadId}
-            AND run.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+            AND run.status IN ('running', 'waiting', 'completed', 'interrupted', 'failed', 'cancelled')
             AND json_extract(run.payload_json, '$.activeAttemptId') IS NOT NULL
             AND json_extract(run.payload_json, '$.restartContinuationOfRunId') IS NULL
             AND message.role = 'user'

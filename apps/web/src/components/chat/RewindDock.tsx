@@ -96,9 +96,13 @@ function Header({ title, hints }: { readonly title: ReactNode; readonly hints: R
 function StatNumbers({ stat }: { readonly stat: RewindStat }) {
   return (
     <span className="font-mono text-xs tabular-nums">
-      <span className="text-muted-foreground">{stat.label}</span>{" "}
-      <span className="text-diff-addition-foreground">{stat.insertions}</span>{" "}
-      <span className="text-diff-deletion-foreground">{stat.deletions}</span>
+      <span className="text-muted-foreground">{stat.label}</span>
+      {stat.insertions === null ? null : (
+        <span className="text-diff-addition-foreground"> {stat.insertions}</span>
+      )}
+      {stat.deletions === null ? null : (
+        <span className="text-diff-deletion-foreground"> {stat.deletions}</span>
+      )}
     </span>
   );
 }
