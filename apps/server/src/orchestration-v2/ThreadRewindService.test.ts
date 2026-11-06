@@ -29,7 +29,9 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -631,6 +633,34 @@ it.effect("a failed one-way rollback leaves the code alone", () => {
     yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
     assert.equal(fake.restore.mock.calls.length, 0);
     assert.deepEqual(yield* runStatuses, ["completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("a replay after a crash never rolls a provider's conversation back twice", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 3, cwd, promptRefs: false });
+    const restoring = yield* Deferred.make<void>();
+    fake.restore.mockImplementationOnce(() =>
+      Deferred.succeed(restoring, undefined).pipe(Effect.andThen(Effect.never)),
+    );
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+
+    const crashed = yield* service
+      .rewind(rewindInput("code_and_conversation"))
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(restoring);
+    yield* Fiber.interrupt(crashed);
+    assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+
+    yield* service.rewind(rewindInput("code_and_conversation"));
+
+    assert.equal(fake.rollbackThread.mock.calls.length, 1);
+    assert.deepEqual(yield* runStatuses, ["completed", "rolled_back", "rolled_back"]);
+    const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    assert.equal(providerThreads[0]?.nativeConversationHeadRef?.nativeId, "kept-head");
   }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
 });
 
