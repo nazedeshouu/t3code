@@ -79,11 +79,18 @@ const REWIND_FAILED = "The rewind could not finish. Nothing was changed.";
 const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't be restored.";
 const EARLIER_SESSION = "This turn's file checkpoints stayed with an earlier provider session.";
 const NO_CONVERSATION = "This thread has no provider conversation to rewind.";
+/** Claude's only wording for a prompt with no snapshot, and pre-compaction snapshots die with a restart. */
+const CLAUDE_NO_SNAPSHOT = "No file checkpoint found for this message.";
+const SNAPSHOT_LOST =
+  "Claude can't restore this turn's code. After a restart, it loses checkpoints from before its latest compaction.";
 const CODE_NOT_RESTORED = "The conversation was rewound, but the code could not be restored.";
 const ROLLBACK_NOT_RECORDED =
   "The conversation was rewound, but this thread could not be updated to show it. Rewinding again may remove more turns.";
 /** Recorded for a path holding anything but a regular file. It never matches at undo. */
 const NOT_A_FILE = "not-a-file";
+
+const fileRewindRefusal = (reason: string | undefined) =>
+  reason === CLAUDE_NO_SNAPSHOT ? SNAPSHOT_LOST : reason;
 
 /** A refusal or failure the user sees through `rollbackFailure`. Only `retryable` ones are replayed. */
 export class ThreadRewindError extends Schema.TaggedError<ThreadRewindError>()(
@@ -548,7 +555,10 @@ export const layer = Layer.effect(
         dryRun: true,
       });
       if (!result.canRewind) {
-        return yield* refuse(loaded.context.thread.id, result.reason ?? NO_FILE_CHECKPOINT);
+        return yield* refuse(
+          loaded.context.thread.id,
+          fileRewindRefusal(result.reason) ?? NO_FILE_CHECKPOINT,
+        );
       }
       return result;
     });
@@ -740,7 +750,10 @@ export const layer = Layer.effect(
         dryRun: false,
       });
       if (!result.canRewind) {
-        return yield* refuse(threadId, result.reason ?? "The code could not be restored.");
+        return yield* refuse(
+          threadId,
+          fileRewindRefusal(result.reason) ?? "The code could not be restored.",
+        );
       }
     });
 
