@@ -163,6 +163,12 @@ type CodeEngine =
 
 type ProviderTurn = NonNullable<ProjectionThreadRewindContext["promptTurn"]>;
 
+/** Opened on first use: a git restore needs none, and the picker may name another provider. */
+type RewindSession = Effect.Effect<
+  ProviderAdapter.ProviderAdapterV2SessionRuntime,
+  CheckpointRollbackExecutionError
+>;
+
 interface LoadedRewind {
   readonly context: ProjectionThreadRewindContext;
   readonly providerThread: NonNullable<ProjectionThreadRewindContext["providerThread"]>;
@@ -364,7 +370,8 @@ export const layer = Layer.effect(
         if (providerTurn === undefined) {
           return { type: "unavailable", reason: NO_FILE_CHECKPOINT } satisfies CodeEngine;
         }
-        return providerTurn.providerThreadId === providerThread.id
+        return providerTurn.providerThreadId === providerThread.id &&
+          providerThread.providerInstanceId === context.thread.modelSelection.instanceId
           ? ({ type: "provider", providerTurn } satisfies CodeEngine)
           : ({ type: "unavailable", reason: EARLIER_SESSION } satisfies CodeEngine);
       }
@@ -547,7 +554,7 @@ export const layer = Layer.effect(
       loaded: LoadedRewind,
       input: Parameters<ThreadRewindServiceShape["rewind"]>[0],
       engine: CodeEngine | undefined,
-      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      session: RewindSession,
     ) {
       const { context, providerThread } = loaded;
       const rollsBack = input.mode !== "code";
@@ -573,7 +580,7 @@ export const layer = Layer.effect(
       );
       let filesChanged: ReadonlyArray<string> = [];
       if (engine?.type === "provider") {
-        filesChanged = (yield* providerDryRun(loaded, engine, session)).filesChanged;
+        filesChanged = (yield* providerDryRun(loaded, engine, yield* session)).filesChanged;
       }
       return yield* writeRecord(input.threadId, input.rewindId, filesChanged, {
         filesRestored: filesChanged.length,
@@ -591,11 +598,12 @@ export const layer = Layer.effect(
     const restoreCode = Effect.fnUntraced(function* (
       loaded: LoadedRewind,
       engine: Extract<CodeEngine, { readonly type: "provider" }>,
-      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      session: RewindSession,
     ) {
       const threadId = loaded.context.thread.id;
-      if (session.rewindFiles === undefined) return yield* refuse(threadId, NO_FILE_CHECKPOINT);
-      const result = yield* session.rewindFiles({
+      const { rewindFiles } = yield* session;
+      if (rewindFiles === undefined) return yield* refuse(threadId, NO_FILE_CHECKPOINT);
+      const result = yield* rewindFiles({
         providerThread: loaded.providerThread,
         providerTurn: engine.providerTurn,
         dryRun: false,
@@ -609,7 +617,7 @@ export const layer = Layer.effect(
       loaded: LoadedRewind,
       input: Parameters<ThreadRewindServiceShape["rewind"]>[0],
       record: RewindUndoRecord,
-      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+      session: RewindSession,
     ) {
       if (record.rolledBackTo !== null) {
         return {
@@ -619,7 +627,10 @@ export const layer = Layer.effect(
           runtimeRequests: [],
         } satisfies ProviderAdapter.ProviderAdapterV2ThreadSnapshot;
       }
-      const snapshot = yield* rollback.rollbackConversation({ ...loaded.rollback, session });
+      const snapshot = yield* rollback.rollbackConversation({
+        ...loaded.rollback,
+        session: yield* session,
+      });
       yield* markRolledBack(input.threadId, input.rewindId, record, snapshot.providerThread);
       return snapshot;
     });
@@ -640,7 +651,7 @@ export const layer = Layer.effect(
       yield* rollback.ensureWorktree(loaded.rollback);
       const engine = restoresCode ? yield* codeEngine(loaded) : undefined;
       if (engine?.type === "unavailable") return yield* refuse(threadId, engine.reason);
-      const session = yield* rollback.openSession(loaded.rollback);
+      const session = yield* Effect.cached(rollback.openSession(loaded.rollback));
 
       const existing = yield* readRecord(threadId, rewindId);
       const record = Option.isSome(existing)
