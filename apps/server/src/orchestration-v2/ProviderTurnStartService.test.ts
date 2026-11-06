@@ -1344,7 +1344,8 @@ effectIt.effect("delivers a rewind's summary to the next run though it targets a
 
     const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
     expect(text).toContain("REWIND_SUMMARY");
-    expect(text).toContain("This summary replaces them.");
+    expect(text).toContain("Files were left as they are");
+    expect(text).not.toContain("no longer exist");
     expect(text).not.toContain("t3_thread_read");
     expect(text.endsWith("User message:\nCarry on.")).toBe(true);
   }),
