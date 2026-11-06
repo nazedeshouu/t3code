@@ -37,6 +37,7 @@ import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { setRewindPreviewTarget } from "./rewindPreviewTarget";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
@@ -103,8 +104,6 @@ function baseProps(): Omit<TimelineProps, "timelineEntries"> {
     onOpenTurnDiff: () => {},
     onOpenThread: () => {},
     onForkFromRun: async () => {},
-    supportsConversationRollback: false,
-    onRevertToTurnCount: () => {},
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ENVIRONMENT_ID,
@@ -1016,24 +1015,52 @@ describe("MessagesTimeline automation prompts", () => {
         message("Done", { role: "assistant", runId }, "assistant-1"),
       ],
       {
-        supportsConversationRollback: true,
-        threadStartCheckpointReady: true,
-        turnDiffSummaries: [
-          {
-            runId,
-            checkpointTurnCount: 1,
-            checkpointRef: "checkpoint-1" as never,
-            status: "ready",
-            files: [],
-            assistantMessageId: MessageId.make("assistant-1"),
-            completedAt: CREATED_AT,
-          },
-        ],
+        onRewindToMessage: () => {},
       },
     );
-    expect(screen.buttons("Edit from here")).toHaveLength(0);
+    expect(screen.buttons("Rewind to here")).toHaveLength(0);
     await click(screen.button(/^Automation/));
-    expect(screen.buttons("Edit from here")).toHaveLength(1);
+    expect(screen.buttons("Rewind to here")).toHaveLength(1);
+  });
+});
+
+describe("MessagesTimeline rewind preview", () => {
+  it("dims from the target through CSS, without a React commit", async () => {
+    const props = baseProps();
+    const onRender = vi.fn();
+    const entries = ["one", "two", "three"].map((id) => message(id, {}, id));
+    await using screen = await renderElement(
+      <Profiler id="timeline" onRender={onRender}>
+        <MessagesTimeline {...props} timelineEntries={entries} />
+      </Profiler>,
+    );
+    const row = (id: string) =>
+      screen.container.querySelector<HTMLElement>(`[data-message-id="${id}"]`)!;
+    await vi.waitFor(() => expect(row("three")).not.toBeNull());
+    const opacity = (id: string) => Number(getComputedStyle(row(id)).opacity);
+    const marker = (id: string) =>
+      Number(getComputedStyle(row(id).parentElement!, "::before").opacity);
+    const preview = (messageId: MessageId | null) =>
+      setRewindPreviewTarget({ threadKey: props.routeThreadKey, messageId });
+    onTestFinished(() => setRewindPreviewTarget(null));
+    row("one").style.transition =
+      row("two").style.transition =
+      row("three").style.transition =
+        "none";
+
+    onRender.mockClear();
+    preview(MessageId.make("two"));
+    await vi.waitFor(() => expect(opacity("two")).toBeCloseTo(0.32));
+    expect(opacity("one")).toBe(1);
+    expect(opacity("three")).toBeCloseTo(0.32);
+    expect(marker("two")).toBe(1);
+    expect(marker("one")).toBe(0);
+    expect(marker("three")).toBe(0);
+    expect(onRender).not.toHaveBeenCalled();
+
+    preview(null);
+    await vi.waitFor(() => expect(opacity("two")).toBe(1));
+    expect(onRender).not.toHaveBeenCalled();
   });
 });
 

@@ -35,8 +35,8 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   Redo2Icon,
-  PencilIcon,
   LinkIcon,
+  Undo2Icon,
 } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { FreshSessionRow, ModelSwitchRow } from "./V2LifecycleRow";
@@ -288,7 +288,6 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
     text.trim().split(/\r?\n/, 1)[0] ??
     "";
 
-  const revertTurnCount = row.revertTurnCount;
   const promptLink = promptLinkFor(text);
   // Find reads the DOM, so a folded prompt stays mounted but hidden while find is open.
   const bodyMounted = expanded || ctx.findActive;
@@ -348,9 +347,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               alwaysVisible
             />
             <div className="flex items-center gap-0.5">
-              {typeof revertTurnCount === "number" && (
-                <RevertUserMessageButton turnCount={revertTurnCount} messageId={row.message.id} />
-              )}
+              {row.rewindable ? <RewindUserMessageButton messageId={row.message.id} /> : null}
               <MessageCopyButton text={text} variant="ghost" />
               {promptLink !== null && (
                 <MessageCopyButton
@@ -467,7 +464,6 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const senderLabel = senderShell?.title.trim() || "Agent";
   const resolvedContext = resolveUserMessageContext({ ...row.message, text: userMessage.text });
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
-  const revertTurnCount = row.revertTurnCount;
   const attachmentReferences = collectComposerContextReferences(resolvedContext.text).flatMap(
     (occurrence) => {
       const record = asKnownContextRecord(resolvedContext.recordsById.get(occurrence.contextId));
@@ -800,9 +796,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         </TooltipPopup>
       </Tooltip>
       <div className={cn("flex items-center gap-0.5", floatActions && "flex-wrap justify-end")}>
-        {typeof revertTurnCount === "number" && (
-          <RevertUserMessageButton turnCount={revertTurnCount} messageId={row.message.id} />
-        )}
+        {row.rewindable ? <RewindUserMessageButton messageId={row.message.id} /> : null}
         {copyText && (
           <MessageCopyButton
             text={contextClipboardFragment ? copyText : plainText}
@@ -1084,13 +1078,7 @@ function UserMessageIntentMarker({
   );
 }
 
-function RevertUserMessageButton({
-  turnCount,
-  messageId,
-}: {
-  turnCount: number;
-  messageId: MessageId;
-}) {
+function RewindUserMessageButton({ messageId }: { messageId: MessageId }) {
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
 
@@ -1102,15 +1090,15 @@ function RevertUserMessageButton({
             type="button"
             size="xs"
             variant="ghost"
-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
-            onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
-            aria-label="Edit from here"
+            disabled={activity.isRevertingCheckpoint}
+            onClick={() => ctx.onRewindToMessage?.(messageId)}
+            aria-label="Rewind to here"
           />
         }
       >
-        <PencilIcon className="size-3" />
+        <Undo2Icon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Edit from here</TooltipPopup>
+      <TooltipPopup side="top">Rewind to here</TooltipPopup>
     </Tooltip>
   );
 }

@@ -42,6 +42,7 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type SyntheticEvent,
 } from "react";
@@ -127,6 +128,7 @@ import {
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
 import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
+import { useRewindTimelinePreview } from "./useRewindTimelinePreview";
 import {
   attachTimelineViewport,
   nextListOpening,
@@ -181,7 +183,9 @@ function TimelineListFooter({
   }, [onGrow]);
   return (
     <div>
-      <div ref={contentRef}>{children}</div>
+      <div ref={contentRef} data-timeline-footer-content="true">
+        {children}
+      </div>
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
     </div>
@@ -276,10 +280,8 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
-  supportsConversationRollback: boolean;
-  threadStartCheckpointReady?: boolean;
-  availableRevertTurnCounts?: ReadonlySet<number> | undefined;
-  onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
+  /** Offers rewinding from each user message. */
+  onRewindToMessage?: ((messageId: MessageId) => void) | undefined;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onSendAppMessage?: (text: string) => Promise<void>;
   onRunShellCommand?: (command: string) => void;
@@ -301,6 +303,8 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   /** Disable while reading history to prevent LegendList re-pinning near the bottom. */
   liveFollowEnabled: boolean;
+  /** The rewind dock is open, so the selected message's position beats the live end. */
+  rewindPreviewOpen?: boolean;
   /** Receives the list's viewport when it mounts; the returned cleanup runs when it goes away. */
   onViewportAttach?: (viewport: TimelineViewport) => () => void;
   /** The footer's content grew, such as a new queued turn or status line. */
@@ -324,7 +328,7 @@ export function MessagesTimeline(props: MessagesTimelineProps) {
     <ConversationTimeline
       {...props}
       {...find}
-      liveFollowEnabled={!findOpen && props.liveFollowEnabled}
+      liveFollowEnabled={!findOpen && !props.rewindPreviewOpen && props.liveFollowEnabled}
     />
   );
 }
@@ -375,10 +379,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
-  supportsConversationRollback,
-  threadStartCheckpointReady = false,
-  availableRevertTurnCounts,
-  onRevertToTurnCount,
+  onRewindToMessage,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onSendAppMessage,
   onRunShellCommand,
@@ -661,9 +662,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     runlessWorkActive,
     activeTurnStartedAt,
     turnDiffSummaries,
-    supportsConversationRollback,
-    threadStartCheckpointReady,
-    availableRevertTurnCounts,
+    rewindEnabled: onRewindToMessage !== undefined,
     worktreeSetup,
     toolCallVisibility,
     revealedMessageId,
@@ -1014,7 +1013,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     skills,
     runs,
     activeThreadEnvironmentId,
-    onRevertToTurnCount,
+    onRewindToMessage,
     onRunShellCommand,
     findActive,
     onImageExpand,
@@ -1182,6 +1181,15 @@ const ConversationTimeline = memo(function ConversationTimeline({
     contentInsetEndAdjustment,
   });
 
+  useRewindTimelinePreview({
+    threadKey: listIdentityKey,
+    viewport: timelineViewportElement,
+    rows,
+    listRef,
+    historyControls,
+    contentInsetEndAdjustment,
+  });
+
   useThreadFindNavigation({
     // Find reveals its match only after the opening restore settles; both
     // scroll the list directly, so the restore would otherwise pull it back.
@@ -1218,10 +1226,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
       return next;
     });
   });
-  const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
+  // `--rewind-row` lets CSS place each row against the rewind boundary. `rowCount` in the list's
+  // extraData re-renders mounted rows whenever an index can shift.
+  const renderItem = ({ item, index }: { item: MessagesTimelineRow; index: number }) => (
     <TimelineRowCtx value={sharedState}>
       <div
         className="messages-timeline-row-frame"
+        style={{ "--rewind-row": index } as CSSProperties}
         onPlayCapture={(event) => onAudioPlaybackChange(item.id, event)}
         onPauseCapture={(event) => onAudioPlaybackChange(item.id, event)}
         onEndedCapture={(event) => onAudioPlaybackChange(item.id, event)}

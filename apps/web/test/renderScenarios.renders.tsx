@@ -99,8 +99,6 @@ function timelineFor() {
       onOpenTurnDiff={() => {}}
       onOpenThread={() => {}}
       onForkFromRun={async () => {}}
-      supportsConversationRollback={false}
-      onRevertToTurnCount={() => {}}
       isRevertingCheckpoint={false}
       onImageExpand={() => {}}
       activeThreadEnvironmentId={ENVIRONMENT_ID}

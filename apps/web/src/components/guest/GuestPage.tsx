@@ -490,8 +490,6 @@ function GuestThread({
             runs={projection.runs}
             routeThreadKey={threadKey}
             onOpenThread={ignore}
-            supportsConversationRollback={false}
-            onRevertToTurnCount={ignore}
             isRevertingCheckpoint={false}
             onImageExpand={openExpandedImage}
             onFileOpen={openFile}

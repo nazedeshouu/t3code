@@ -960,6 +960,57 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     padding-inline: 0;
   }
 
+  /*
+   * Rewind preview. The viewport holds the boundary and each row its own index, so moving the
+   * selection restyles mounted rows and renders none. Rows without an index sit past any boundary.
+   */
+  [data-timeline-root] > *,
+  [data-timeline-footer-content] {
+    transition: opacity 140ms ease-out;
+  }
+
+  [data-rewind-preview] [data-timeline-root] > * {
+    opacity: calc(1 - 0.68 * clamp(0, var(--rewind-row, 999999) - var(--rewind-boundary) + 1, 1));
+  }
+
+  [data-rewind-preview] [data-timeline-footer-content] {
+    opacity: 0.32;
+  }
+
+  [data-rewind-preview] [data-timeline-root] {
+    position: relative;
+  }
+
+  /* LegendList's row containers contain paint, which would clip the marker above its row. */
+  [data-rewind-preview] :has(> .messages-timeline-row-frame) {
+    contain: layout style !important;
+  }
+
+  /* Only the boundary row's distance is 0, so only its marker has any opacity. */
+  [data-rewind-preview] [data-timeline-root]::before {
+    --rewind-distance: calc(var(--rewind-row, 999999) - var(--rewind-boundary));
+    --rewind-hairline: color-mix(in srgb, var(--primary) 64%, transparent);
+    content: "Rewinds to here";
+    position: absolute;
+    inset-inline: 0.25rem;
+    top: -0.875rem;
+    height: 1rem;
+    color: var(--primary);
+    font-size: var(--text-2xs);
+    line-height: 1rem;
+    pointer-events: none;
+    background: linear-gradient(var(--rewind-hairline), var(--rewind-hairline)) right center /
+      calc(100% - 5.75rem) 1px no-repeat;
+    opacity: clamp(0, 1 - var(--rewind-distance) * var(--rewind-distance), 1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-timeline-root] > *,
+    [data-timeline-footer-content] {
+      transition: none;
+    }
+  }
+
   .settings-slider {
     --settings-slider-progress: 0%;
     --settings-slider-fill-offset: 0.5rem;
