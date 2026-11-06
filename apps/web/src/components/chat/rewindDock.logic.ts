@@ -37,8 +37,8 @@ export function advanceRewindEscape(
 
 export interface RewindStat {
   readonly label: string;
-  readonly insertions: string;
-  readonly deletions: string;
+  readonly insertions: string | null;
+  readonly deletions: string | null;
 }
 
 export function formatRewindStat(stats: ThreadRewindCodeStats): RewindStat {
@@ -47,8 +47,8 @@ export function formatRewindStat(stats: ThreadRewindCodeStats): RewindStat {
       stats.primaryPath !== null && stats.filesChanged === 1
         ? basenameOfPath(stats.primaryPath)
         : `${stats.filesChanged} ${stats.filesChanged === 1 ? "file" : "files"}`,
-    insertions: `+${formatCompactDiffCount(stats.insertions)}`,
-    deletions: `−${formatCompactDiffCount(stats.deletions)}`,
+    insertions: stats.insertions === 0 ? null : `+${formatCompactDiffCount(stats.insertions)}`,
+    deletions: stats.deletions === 0 ? null : `−${formatCompactDiffCount(stats.deletions)}`,
   };
 }
 
@@ -62,6 +62,8 @@ export function rewindRowCode(code: ThreadRewindTurnCode): RewindRowCode {
       return { kind: "stat", stat: formatRewindStat(code.stats) };
     case "unchanged":
       return { kind: "text", text: "No code changes", warning: false };
+    case "pending":
+      return { kind: "text", text: "", warning: false };
     case "unavailable":
       return { kind: "text", text: "No code restore", warning: true };
   }

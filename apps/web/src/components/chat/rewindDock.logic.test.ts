@@ -67,6 +67,17 @@ describe("rewind row stats", () => {
     expect(
       formatRewindStat({ filesChanged: 3, insertions: 1500, deletions: 18, primaryPath: null }),
     ).toEqual({ label: "3 files", insertions: "+1.5k", deletions: "−18" });
+    expect(
+      formatRewindStat({ filesChanged: 2, insertions: 0, deletions: 3, primaryPath: null }),
+    ).toEqual({ label: "2 files", insertions: null, deletions: "−3" });
+  });
+
+  it("leaves a turn with unknown stats blank", () => {
+    expect(rewindRowCode({ state: "pending" })).toEqual({
+      kind: "text",
+      text: "",
+      warning: false,
+    });
   });
 
   it("warns only for turns without a snapshot", () => {

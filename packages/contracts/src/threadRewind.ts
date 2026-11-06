@@ -31,6 +31,8 @@ export type ThreadRewindCodeStats = typeof ThreadRewindCodeStats.Type;
 export const ThreadRewindTurnCode = Schema.Union([
   Schema.Struct({ state: Schema.Literal("changed"), stats: ThreadRewindCodeStats }),
   Schema.Struct({ state: Schema.Literal("unchanged") }),
+  /** A snapshot exists but the turn's stats are not known, as while it runs. */
+  Schema.Struct({ state: Schema.Literal("pending") }),
   /** No file snapshot exists for this turn, so code cannot be restored to it. */
   Schema.Struct({ state: Schema.Literal("unavailable") }),
 ]);
