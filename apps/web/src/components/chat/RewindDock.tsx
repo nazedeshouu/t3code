@@ -136,7 +136,10 @@ const TargetRow = memo(function TargetRow(props: {
       tabIndex={-1}
       aria-selected={selected}
       data-rewind-row={index}
-      className={cn(ROW, "min-h-8 py-1")}
+      className={cn(
+        ROW,
+        "min-h-8 py-1 [contain-intrinsic-size:auto_2rem] [content-visibility:auto]",
+      )}
       onPointerMove={() => onSelect(target.messageId)}
       onClick={() => onChoose(target.messageId)}
     >
