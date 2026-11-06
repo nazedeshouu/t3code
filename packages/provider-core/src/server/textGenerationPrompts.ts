@@ -486,3 +486,23 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+export function buildThreadSummaryPrompt(input: {
+  readonly history: string;
+  readonly instructions?: string | undefined;
+}) {
+  const prompt = [
+    "You summarize part of a coding agent conversation that is being replaced by the summary.",
+    "The agent resumes from an earlier point and reads this summary as its only record of what followed.",
+    "Return a JSON object with key: summary.",
+    "Keep decisions, findings, unresolved questions and what the user asked for. Name files and commands exactly.",
+    "State what was concluded, not who said what. Do not address the user or add a preamble.",
+    ...(input.instructions === undefined
+      ? []
+      : ["", "User's instructions for this summary:", limitSection(input.instructions, 2_000)]),
+    "",
+    "Conversation:",
+    input.history,
+  ].join("\n");
+  return { prompt, outputSchema: Schema.Struct({ summary: Schema.String }) };
+}

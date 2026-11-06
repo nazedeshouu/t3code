@@ -30,6 +30,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildThreadSummaryPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
@@ -350,6 +351,15 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
     return { title: sanitizeThreadTitle(generated.title) };
   });
+  const generateThreadSummary: ProviderTextGeneration["generateThreadSummary"] = Effect.fn(
+    "MuseTextGeneration.generateThreadSummary",
+  )(function* (input) {
+    return yield* runMuseJson({
+      operation: "generateThreadSummary",
+      ...buildThreadSummaryPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+  });
   const generateTranscriptionPostProcessing: ProviderTextGeneration["generateTranscriptionPostProcessing"] =
     Effect.fn("MuseTextGeneration.generateTranscriptionPostProcessing")(function* (input) {
       return yield* runMuseJson({
@@ -366,6 +376,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateThreadSummary,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
