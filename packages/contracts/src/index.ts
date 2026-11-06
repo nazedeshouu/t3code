@@ -24,6 +24,7 @@ export * from "./providerPolicy.ts";
 export * from "./modelSelection.ts";
 export * from "./chatAttachment.ts";
 export * from "./checkpointDiff.ts";
+export * from "./threadRewind.ts";
 export * from "./model.ts";
 export * from "./keybindings.ts";
 export * from "./server.ts";
