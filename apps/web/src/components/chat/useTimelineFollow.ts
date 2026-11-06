@@ -29,7 +29,11 @@ import {
   type TimelineViewport,
 } from "./timelineViewport";
 import { resolveTimelineIsAtEnd, type MessagesTimelineRow } from "./MessagesTimeline.logic";
-import { measuredEndOffset, settleListScroll } from "./useTimelinePositionRestore";
+import {
+  measuredEndOffset,
+  settleListScroll,
+  startTimelinePositionRestore,
+} from "./useTimelinePositionRestore";
 import {
   releaseChatTimelineAnchor,
   shouldReleaseTimelineAnchorForToolActivity,
@@ -338,6 +342,49 @@ export function useTimelineFollow(input: TimelineFollowInput) {
     if (grew && readCurrentFollow().mode === "following") scrollToEndStable();
   }, [composerTimelineInset, readCurrentFollow, scrollToEndStable]);
 
+  const releaseTimeline = useStableCallback(
+    (
+      held: {
+        readonly visit: TimelineFollowVisit;
+        readonly wasFollowing: boolean;
+        readonly position: ReturnType<typeof readTimelinePosition>;
+      },
+      returnToEnd: boolean,
+    ) => {
+      if (held.visit.threadKey !== visit.threadKey) return false;
+      const list = legendListRef.current;
+      const viewport = viewportRef.current;
+      if (returnToEnd || held.wasFollowing || !list || !viewport) {
+        scrollToEnd();
+        return true;
+      }
+      startTimelinePositionRestore({
+        list,
+        viewport,
+        listIdentityKey: routeThreadKey,
+        listOpenedOn: null,
+        rememberedPosition: held.position,
+        citationPending: false,
+        releaseForFind: false,
+        onPositioned: () => {},
+      });
+      return true;
+    },
+  );
+  /**
+   * Lets go of the timeline for a preview that scrolls it. The release puts it back where it was,
+   * or at its end, and reports false when the thread changed and there is nothing to put back.
+   */
+  const holdTimeline = useStableCallback(() => {
+    const held = {
+      visit,
+      wasFollowing: readFollow().mode === "following",
+      position: readTimelinePosition(routeThreadKey),
+    };
+    viewportRef.current?.navigate({ releasesFollow: true });
+    return (returnToEnd: boolean) => releaseTimeline(held, returnToEnd);
+  });
+
   const handleNavigation = (navigation: TimelineNavigation) => {
     const awayFromEnd = () => resolveTimelineIsAtEnd(legendListRef.current?.getState()) === false;
     const releases = navigationReleasesFollow(navigation, {
@@ -544,5 +591,6 @@ export function useTimelineFollow(input: TimelineFollowInput) {
     anchorNewTurn,
     attachTimelineViewport,
     attachComposerOverlay: followStore.attachComposerOverlay,
+    holdTimeline,
   };
 }

@@ -1,5 +1,4 @@
 import {
-  CommandId,
   type EnvironmentId,
   type ModelSelection,
   type ScopedThreadRef,
@@ -20,7 +19,6 @@ import {
   getUploadedAttachments,
   refreshExpiredAttachmentUploads,
 } from "../../lib/attachmentUploadQueue";
-import { findRevertCheckpoint } from "../../session-logic";
 import { type ChatMessage } from "../../types";
 import { randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -43,7 +41,6 @@ import {
   type ComposerSendSnapshot,
   readFileAsDataUrl,
   prepareRevertedMessageAttachments,
-  waitForRevertedMessage,
 } from "../ChatView.logic";
 import { readPreparedConnection } from "../../state/session";
 import { recallComposerMessage } from "./composerPromptHistory";
@@ -150,41 +147,38 @@ export async function startFanoutThread(input: {
   }
 }
 
+export interface RewindPrefill {
+  readonly prompt: string;
+  readonly previousPrompt: string;
+  readonly imageIds: ReadonlyArray<string>;
+  readonly fileIds: ReadonlyArray<string>;
+}
+
 /**
- * Reverts the thread to before `message` and puts that message's text, mentions
- * and attachments back in the composer draft. Returns the restored prompt, or the
- * error to show; on error the draft is untouched.
+ * Runs `rewind`, then puts `message`'s text, mentions and attachments back in the composer draft, after any
+ * draft already there. Attachments are read first, since the rewind removes the message. Returns
+ * what it wrote, or the error to show; on error the draft is untouched.
  */
 export async function rewindToMessage(input: {
-  readonly message: ChatMessage;
+  /** Null leaves the composer alone, as a code-only rewind does. */
+  readonly message: ChatMessage | null;
   readonly environmentId: EnvironmentId;
-  readonly routeThreadRef: ScopedThreadRef;
-  readonly threadId: ThreadId;
-  readonly turnCount: number;
-  readonly restoreFiles: boolean;
-  readonly checkpoint: ReturnType<typeof findRevertCheckpoint>;
   readonly draftTarget: ScopedThreadRef | DraftId;
   readonly composerHasPendingAttachments: boolean;
   readonly createAssetUrl: Parameters<
     typeof prepareRevertedMessageAttachments
   >[0]["createAssetUrl"];
-  readonly revertThreadCheckpoint: (value: {
-    environmentId: EnvironmentId;
-    input: {
-      commandId: CommandId;
-      threadId: ThreadId;
-      turnCount: number;
-      restoreFiles: boolean;
-      checkpointId?: string;
-      scopeId?: string;
-    };
-  }) => Promise<AtomCommandResult<unknown, unknown>>;
+  readonly rewind: () => Promise<void>;
 }): Promise<
-  | { readonly error: string; readonly prompt?: never }
-  | { readonly error: null; readonly prompt: string }
+  | { readonly error: string; readonly prefill?: never }
+  | { readonly error: null; readonly prefill: RewindPrefill | null }
 > {
   const { message, environmentId, draftTarget } = input;
   try {
+    if (message === null) {
+      await input.rewind();
+      return { error: null, prefill: null };
+    }
     if (input.composerHasPendingAttachments) {
       throw new Error("Wait for attachments to finish preparing before rewinding.");
     }
@@ -204,31 +198,16 @@ export async function rewindToMessage(input: {
     ) {
       throw new Error("Make room for this message's attachments in the composer before rewinding.");
     }
-    const commandId = CommandId.make(randomUUID());
-    await waitForRevertedMessage(input.routeThreadRef, input.turnCount, commandId, async () => {
-      const result = await input.revertThreadCheckpoint({
-        environmentId,
-        input: {
-          commandId,
-          threadId: input.threadId,
-          turnCount: input.turnCount,
-          restoreFiles: input.restoreFiles,
-          ...(input.checkpoint === undefined
-            ? {}
-            : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
-        },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    });
-    const currentPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
+    await input.rewind();
+    const previousPrompt = store.getComposerDraft(draftTarget)?.prompt ?? "";
     const { prompt: restoredPrompt, mentions } = recallComposerMessage(message);
-    const nextPrompt =
+    const prompt =
       restoredPrompt.length === 0
-        ? currentPrompt
-        : currentPrompt.length > 0
-          ? `${currentPrompt}\n\n${restoredPrompt}`
+        ? previousPrompt
+        : previousPrompt.length > 0
+          ? `${previousPrompt}\n\n${restoredPrompt}`
           : restoredPrompt;
-    store.setPrompt(draftTarget, nextPrompt);
+    store.setPrompt(draftTarget, prompt);
     // The restored prompt already carries the chips; these add only their records.
     store.addThreadContexts(draftTarget, mentions.threadContexts, { appendReference: false });
     store.addEnvironmentContexts(draftTarget, mentions.environmentContexts, {
@@ -252,9 +231,17 @@ export async function rewindToMessage(input: {
     });
     store.addImages(draftTarget, images, { allowDuplicates: true });
     store.addFiles(draftTarget, restoredFiles, { allowDuplicates: true });
-    return { error: null, prompt: nextPrompt };
+    return {
+      error: null,
+      prefill: {
+        prompt,
+        previousPrompt,
+        imageIds: images.map((image) => image.id),
+        fileIds: restoredFiles.map((file) => file.id),
+      },
+    };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "Failed to revert thread state." };
+    return { error: error instanceof Error ? error.message : "The rewind failed." };
   }
 }
 
