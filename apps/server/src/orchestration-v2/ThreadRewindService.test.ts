@@ -512,6 +512,42 @@ it.effect("a retried rewind keeps the first stash instead of stashing restored c
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
+it.effect("a replay refused after the first try restored files puts them back", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    fake.rollbackThread.mockImplementationOnce(() => Effect.interrupt);
+    yield* service.rewind(rewindInput("code_and_conversation")).pipe(Effect.exit);
+    assert.equal(yield* fileSystem.readFileString(file), "restored");
+
+    const eventSink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("seed:detached"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId: instanceId,
+          occurredAt: yield* DateTime.now,
+          payload: { ...providerThreads[0]!, providerSessionId: null },
+        },
+      ],
+    });
+
+    yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
+
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+    assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
 it.effect("code mode leaves the conversation alone and undo removes a recreated file", () => {
   const fake = makeFake({});
   return Effect.gen(function* () {
