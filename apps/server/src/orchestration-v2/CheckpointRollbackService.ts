@@ -2,6 +2,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   latestProviderTurnForAttempt,
+  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   ProviderThreadId,
@@ -104,6 +105,14 @@ export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionE
     : ROLLBACK_FAILED_MESSAGE;
 }
 
+export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateError>()(
+  "WorktreeRecreateError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 /** The rollback records a target resolved to, whichever command asked for it. */
 export interface ConversationRollbackInput {
   readonly context: ProjectionCheckpointRollbackContext;
@@ -124,9 +133,9 @@ export interface CheckpointRollbackServiceV2Shape {
   }) => Effect.Effect<void, CheckpointRollbackExecutionError>;
   /** Recreates a server-managed worktree that storage cleanup removed. */
   readonly ensureWorktree: (
-    input: ConversationRollbackInput,
+    thread: Pick<OrchestrationV2AppThread, "id" | "projectId" | "worktreePath" | "branch">,
     replaceLeftover?: { readonly isolated: Effect.Effect<boolean, unknown> },
-  ) => Effect.Effect<void, CheckpointRollbackExecutionError>;
+  ) => Effect.Effect<void, WorktreeRecreateError>;
   readonly openSession: (
     input: ConversationRollbackInput,
   ) => Effect.Effect<ProviderSession, CheckpointRollbackExecutionError>;
@@ -200,12 +209,11 @@ export const layer: Layer.Layer<
 
     const ensureWorktree = Effect.fn("CheckpointRollbackServiceV2.ensureWorktree")(
       function* (
-        input: ConversationRollbackInput,
+        thread: Parameters<CheckpointRollbackServiceV2Shape["ensureWorktree"]>[0],
         // Given for a file restore, which may replace a folder a failed removal left without its
         // checkout. It reports whether that restore is isolated.
         replaceLeftover?: { readonly isolated: Effect.Effect<boolean, unknown> },
       ) {
-        const thread = input.context.thread;
         const { worktreePath, branch } = thread;
         // Recreated only where the server would have made it, as turn start does.
         if (worktreePath == null || branch == null) return;
@@ -234,14 +242,8 @@ export const layer: Layer.Layer<
           yield* recreate;
           return;
         }
-        if (!(yield* replaceLeftover.isolated)) {
-          return yield* new CheckpointRollbackExecutionError({
-            reason: "shared-workspace",
-            threadId: thread.id,
-            providerThreadId: input.providerThread.id,
-            checkpointId: input.checkpointId,
-          });
-        }
+        // The caller refuses a restore that isn't isolated.
+        if (!(yield* replaceLeftover.isolated)) return;
         // Set aside, not removed: a checkout that fails puts the folder and its files back.
           yield* Effect.acquireUseRelease(
             Effect.gen(function* () {
@@ -275,7 +277,10 @@ export const layer: Layer.Layer<
               ),
           );
       },
-      (effect, input) => effect.pipe(asRollbackFailure(input)),
+      (effect, thread) =>
+        effect.pipe(
+          Effect.mapError((cause) => new WorktreeRecreateError({ threadId: thread.id, cause })),
+        ),
     );
 
     const openSession = Effect.fn("CheckpointRollbackServiceV2.openSession")(
@@ -508,7 +513,9 @@ export const layer: Layer.Layer<
         projects,
         path,
       });
-      yield* ensureWorktree(rollback, restoreFiles ? { isolated } : undefined);
+      yield* ensureWorktree(context.thread, restoreFiles ? { isolated } : undefined).pipe(
+        asRollbackFailure(rollback),
+      );
 
       if (restoreFiles && !(yield* isolated)) {
         return yield* new CheckpointRollbackExecutionError({
