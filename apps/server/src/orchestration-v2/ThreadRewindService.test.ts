@@ -1507,5 +1507,18 @@ it.effect("previews the modes a target allows", () => {
     assert.deepEqual(clean.modes, ["conversation", "summarize_from_here"]);
     assert.isNull(clean.code);
     assert.isNull(clean.codeUnavailableReason);
+
+    fake.rewindFiles.mockImplementation(() =>
+      Effect.succeed({
+        canRewind: false,
+        reason: "No file checkpoint found for this message.",
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      }),
+    );
+    const compacted = yield* service.preview({ threadId, messageId: MESSAGE(2) });
+    assert.deepEqual(compacted.modes, ["conversation", "summarize_from_here"]);
+    assert.include(compacted.codeUnavailableReason, "latest compaction");
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
