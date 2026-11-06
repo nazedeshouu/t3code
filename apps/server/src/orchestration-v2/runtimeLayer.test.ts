@@ -1153,14 +1153,14 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           ),
           Stream.runHead,
         );
-      return { threadId, queued: queued!, settleRewind, started };
+      return { threadId, first: first!, queued: queued!, settleRewind, started };
     });
 
   it.effect("a queue resumed during a rewind starts after it, on the rewound conversation", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
-      const { threadId, queued, settleRewind, started } = yield* seedIdleThreadDuringRewind(
+      const { threadId, first, queued, settleRewind, started } = yield* seedIdleThreadDuringRewind(
         "runtime-rewind-queue-resume",
       );
       const waiting = yield* Effect.forkChild(started);
@@ -1187,6 +1187,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         nativeId: "rewound",
         strength: "strong" as const,
       };
+      const now = yield* DateTime.now;
       yield* eventSink.write({
         commandId: CommandId.make("runtime-rewind-queue-resume-rolled-back"),
         events: [
@@ -1196,8 +1197,16 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
             threadId,
             driver: oldProviderThread!.driver,
             providerInstanceId: oldProviderThread!.providerInstanceId,
-            occurredAt: yield* DateTime.now,
+            occurredAt: now,
             payload: { ...oldProviderThread!, id: rewoundProviderThreadId, nativeThreadRef },
+          },
+          {
+            id: EventId.make("runtime-rewind-queue-resume-first-cut"),
+            type: "run.updated",
+            threadId,
+            runId: first.id,
+            occurredAt: now,
+            payload: { ...first, status: "rolled_back", completedAt: now },
           },
         ],
       });

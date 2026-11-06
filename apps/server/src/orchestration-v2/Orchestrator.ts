@@ -2076,7 +2076,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // A rewind to the thread start replaces the row, and the old one resumes what it cut.
           (activeProviderThread !== undefined &&
             activeProviderThread.id !== storedProviderThread.id &&
-            activeProviderThread.providerInstanceId === storedProviderThread.providerInstanceId));
+            activeProviderThread.providerInstanceId === storedProviderThread.providerInstanceId &&
+            projection.runs.some(
+              (run) =>
+                run.providerThreadId === storedProviderThread.id && run.status === "rolled_back",
+            )));
       const targetProviderThread = followsLatestContext
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId &&
           !providerThreadPredatesBoundary(activeProviderThread, contextBoundary)
