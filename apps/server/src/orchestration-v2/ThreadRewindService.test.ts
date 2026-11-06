@@ -72,6 +72,7 @@ const TURN = (ordinal: number) => ProviderTurnId.make(`turn:${ordinal}`);
 const CHECKPOINT = (ordinal: number) => CheckpointId.make(`checkpoint:${ordinal}`);
 
 interface Fake {
+  readonly openSession: ReturnType<typeof vi.fn<() => void>>;
   readonly rewindFiles: ReturnType<typeof vi.fn<ProviderRewindFiles>>;
   readonly rollbackThread: ReturnType<typeof vi.fn<ProviderRollback>>;
   readonly restore: ReturnType<typeof vi.fn<CheckpointService.CheckpointServiceV2Shape["restore"]>>;
@@ -89,6 +90,7 @@ type ProviderRollback = ProviderAdapter.ProviderAdapterV2SessionRuntime["rollbac
 
 const makeFake = (input: { readonly file?: string; readonly restoredContent?: string }): Fake => {
   const fake: Fake = {
+    openSession: vi.fn<() => void>(),
     rewindFiles: vi.fn<ProviderRewindFiles>((request) =>
       Effect.gen(function* () {
         if (!request.dryRun && input.file !== undefined) {
@@ -131,10 +133,13 @@ const makeLayer = (
     IdAllocator.layer,
     Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
       open: () =>
-        Effect.succeed({
-          rollbackThread: fake.rollbackThread,
-          ...(options.providerEngine === false ? {} : { rewindFiles: fake.rewindFiles }),
-        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        Effect.sync(() => {
+          fake.openSession();
+          return {
+            rollbackThread: fake.rollbackThread,
+            ...(options.providerEngine === false ? {} : { rewindFiles: fake.rewindFiles }),
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+        }),
     }),
     Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
     Layer.mock(CheckpointService.CheckpointServiceV2)({
@@ -617,6 +622,69 @@ it.effect("a one-way provider rewinds without undo and drops the stale refs at o
       : [];
     assert.isFalse(remaining.some((entry) => entry.endsWith("record.json")));
   }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("a git code rewind opens no session, with or without one to open", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd, promptRefs: false });
+    const eventSink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("seed:detached"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId: instanceId,
+          occurredAt: yield* DateTime.now,
+          payload: { ...providerThreads[0]!, providerSessionId: null },
+        },
+      ],
+    });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+
+    yield* service.rewind(rewindInput("code"));
+
+    assert.equal(fake.restore.mock.calls.length, 1);
+    assert.equal(fake.openSession.mock.calls.length, 0);
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("a file engine picked in the composer leaves another instance's session alone", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd });
+    const eventSink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const thread = yield* projections.getThread(threadId);
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("seed:picker"),
+          type: "thread.metadata-updated",
+          threadId,
+          occurredAt: yield* DateTime.now,
+          payload: {
+            ...thread,
+            modelSelection: {
+              ...modelSelection,
+              instanceId: ProviderInstanceId.make("claude_other"),
+            },
+          },
+        },
+      ],
+    });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+
+    const preview = yield* service.preview({ threadId, messageId: MESSAGE(2) });
+    assert.deepEqual(preview.modes, []);
+    assert.equal(fake.openSession.mock.calls.length, 0);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
 it.effect("a failed one-way rollback leaves the code alone", () => {
