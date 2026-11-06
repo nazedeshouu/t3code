@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
@@ -86,6 +89,7 @@ interface Fake {
   readonly generateThreadSummary: ReturnType<
     typeof vi.fn<TextGeneration.TextGeneration["Service"]["generateThreadSummary"]>
   >;
+  readonly createWorktree: ReturnType<typeof vi.fn<(path: string) => void>>;
 }
 type ProviderRewindFiles = NonNullable<
   ProviderAdapter.ProviderAdapterV2SessionRuntime["rewindFiles"]
@@ -125,6 +129,7 @@ const makeFake = (input: { readonly file?: string; readonly restoredContent?: st
     restore: vi.fn(() => Effect.void),
     deleteStaleRefs: vi.fn(() => Effect.void),
     generateThreadSummary: vi.fn(() => Effect.succeed({ summary: "What happened." })),
+    createWorktree: vi.fn<(path: string) => void>(),
   };
   return fake;
 };
@@ -179,7 +184,14 @@ const makeLayer = (
     Layer.mock(ProjectStore.ProjectStoreV2)({
       get: () => Effect.succeedSome({ workspaceRoot: "/nonexistent/rewind" } as never),
     }),
-    Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    Layer.mock(GitWorkflow.GitWorkflowService)({
+      pruneWorktrees: () => Effect.void,
+      createWorktree: (input) =>
+        Effect.sync(() => {
+          fake.createWorktree(input.path ?? "");
+          return {} as never;
+        }),
+    }),
     ServerSettings.layerTest(),
   );
   return ThreadRewindService.layer.pipe(
@@ -197,6 +209,7 @@ const seed = Effect.fnUntraced(function* (input: {
   readonly runs: number;
   readonly cwd: string;
   readonly worktreePath?: string | null;
+  readonly branch?: string;
   readonly checkpointStatus?: "ready" | "missing";
   readonly promptRefs?: boolean;
   /** The last run is still going: running, with a prompt but no stats yet. */
@@ -224,7 +237,7 @@ const seed = Effect.fnUntraced(function* (input: {
     modelSelection,
     runtimeMode: "full-access",
     interactionMode: "default",
-    branch: null,
+    branch: input.branch ?? null,
     worktreePath: input.worktreePath === undefined ? input.cwd : input.worktreePath,
     activeProviderThreadId: providerThreadId,
     lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
@@ -550,6 +563,52 @@ it.effect("a replay refused after the first try restored files puts them back", 
 
     assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
     assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo brings back a removed managed worktree before restoring into it", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const config = yield* ServerConfig.ServerConfig;
+    const worktree = `${config.worktreesDir}/project/thread`;
+    const file = `${worktree}/a.ts`;
+    yield* fileSystem.makeDirectory(worktree, { recursive: true });
+    yield* fileSystem.writeFileString(file, "agent wrote this");
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd: worktree, branch: "t3/rewind" });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code"));
+    fake.createWorktree.mockImplementation(() => {
+      NodeFS.mkdirSync(`${worktree}/.git`, { recursive: true });
+      NodeFS.writeFileSync(file, "restored");
+    });
+
+    yield* fileSystem.remove(worktree, { recursive: true });
+    yield* service.undo({ threadId, rewindId: undoId });
+
+    assert.deepEqual(fake.createWorktree.mock.calls, [[worktree]]);
+    assert.isTrue(yield* fileSystem.exists(`${worktree}/.git`));
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo refuses to fabricate a worktree it cannot recreate", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code"));
+
+    yield* fileSystem.remove(cwd, { recursive: true });
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+
+    assert.equal(error.detail, "This rewind can no longer be undone.");
+    assert.isFalse(yield* fileSystem.exists(cwd));
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 

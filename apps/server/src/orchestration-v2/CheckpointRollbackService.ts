@@ -2,6 +2,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   latestProviderTurnForAttempt,
+  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   ProviderThreadId,
@@ -100,6 +101,14 @@ export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionE
     : ROLLBACK_FAILED_MESSAGE;
 }
 
+export class WorktreeRecreateError extends Schema.TaggedError<WorktreeRecreateError>()(
+  "WorktreeRecreateError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 /** The rollback records a target resolved to, whichever command asked for it. */
 export interface ConversationRollbackInput {
   readonly context: ProjectionCheckpointRollbackContext;
@@ -120,8 +129,8 @@ export interface CheckpointRollbackServiceV2Shape {
   }) => Effect.Effect<void, CheckpointRollbackExecutionError>;
   /** Recreates a server-managed worktree that storage cleanup removed. */
   readonly ensureWorktree: (
-    input: ConversationRollbackInput,
-  ) => Effect.Effect<void, CheckpointRollbackExecutionError>;
+    thread: Pick<OrchestrationV2AppThread, "id" | "projectId" | "worktreePath" | "branch">,
+  ) => Effect.Effect<void, WorktreeRecreateError>;
   readonly openSession: (
     input: ConversationRollbackInput,
   ) => Effect.Effect<ProviderSession, CheckpointRollbackExecutionError>;
@@ -194,8 +203,7 @@ export const layer: Layer.Layer<
         );
 
     const ensureWorktree = Effect.fn("CheckpointRollbackServiceV2.ensureWorktree")(
-      function* (input: ConversationRollbackInput) {
-        const thread = input.context.thread;
+      function* (thread: Parameters<CheckpointRollbackServiceV2Shape["ensureWorktree"]>[0]) {
         const { worktreePath, branch } = thread;
         // Recreated only where the server would have made it, as turn start does.
         if (
@@ -215,7 +223,10 @@ export const layer: Layer.Layer<
           }
         }
       },
-      (effect, input) => effect.pipe(asRollbackFailure(input)),
+      (effect, thread) =>
+        effect.pipe(
+          Effect.mapError((cause) => new WorktreeRecreateError({ threadId: thread.id, cause })),
+        ),
     );
 
     const openSession = Effect.fn("CheckpointRollbackServiceV2.openSession")(
@@ -439,7 +450,7 @@ export const layer: Layer.Layer<
         checkpointId: checkpoint.id,
         targetOrdinal: checkpoint.appRunOrdinal ?? 0,
       };
-      yield* ensureWorktree(rollback);
+      yield* ensureWorktree(context.thread).pipe(asRollbackFailure(rollback));
 
       if (
         input.restoreFiles !== false &&

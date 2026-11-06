@@ -668,7 +668,7 @@ export const layer = Layer.effect(
       const blocked = rollsBack ? conversationBlock(loaded) : null;
       if (blocked !== null) return yield* refuse(threadId, blocked);
 
-      yield* rollback.ensureWorktree(loaded.rollback);
+      yield* rollback.ensureWorktree(context.thread);
       const engine = restoresCode ? yield* codeEngine(loaded) : undefined;
       if (engine?.type === "unavailable") return yield* refuse(threadId, engine.reason);
       const session = yield* Effect.cached(rollback.openSession(loaded.rollback));
@@ -797,6 +797,13 @@ export const layer = Layer.effect(
       if (Option.isNone(found)) return yield* refuse(threadId, UNDO_UNAVAILABLE);
       const record = found.value;
 
+      if (record.files.length > 0) {
+        yield* rollback.ensureWorktree(current);
+        const { worktreePath } = current;
+        if (worktreePath != null && !(yield* fileSystem.exists(worktreePath))) {
+          return yield* refuse(threadId, UNDO_UNAVAILABLE);
+        }
+      }
       yield* restoreFiles(threadId, rewindId, record);
       yield* threadCommands.withLock(
         threadId,
