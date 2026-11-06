@@ -89,6 +89,7 @@ interface Fake {
   readonly generateThreadSummary: ReturnType<
     typeof vi.fn<TextGeneration.TextGeneration["Service"]["generateThreadSummary"]>
   >;
+  readonly eventWrite: ReturnType<typeof vi.fn<() => Effect.Effect<void, Error>>>;
   readonly createWorktree: ReturnType<typeof vi.fn<(path: string) => void>>;
 }
 type ProviderRewindFiles = NonNullable<
@@ -129,6 +130,7 @@ const makeFake = (input: { readonly file?: string; readonly restoredContent?: st
     restore: vi.fn(() => Effect.void),
     deleteStaleRefs: vi.fn(() => Effect.void),
     generateThreadSummary: vi.fn(() => Effect.succeed({ summary: "What happened." })),
+    eventWrite: vi.fn(() => Effect.void),
     createWorktree: vi.fn<(path: string) => void>(),
   };
   return fake;
@@ -194,8 +196,23 @@ const makeLayer = (
     }),
     ServerSettings.layerTest(),
   );
+  const interruptibleEventSink = Layer.effect(
+    EventSink.EventSinkV2,
+    Effect.map(EventSink.EventSinkV2, (sink) => ({
+      ...sink,
+      write: (input: Parameters<typeof sink.write>[0]) =>
+        fake.eventWrite().pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventSink.EventSinkWriteError({ eventCount: input.events.length, cause }),
+          ),
+          Effect.andThen(sink.write(input)),
+        ),
+    })),
+  );
   return ThreadRewindService.layer.pipe(
     Layer.provideMerge(CheckpointRollbackService.layer),
+    Layer.provideMerge(interruptibleEventSink),
     Layer.provideMerge(RuntimeLayer.layerEventSink),
     Layer.provideMerge(ProjectionStore.layer),
     Layer.provideMerge(dependencies),
@@ -563,6 +580,180 @@ it.effect("a replay refused after the first try restored files puts them back", 
 
     assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
     assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+const CHANGED = "a.ts changed after the rewind, so Undo would overwrite it.";
+
+it.effect("undo refuses a file edited after the rewind, then works once it is put back", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* service.rewind(rewindInput("code"));
+
+    yield* fileSystem.writeFileString(file, "my hand edit");
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+    assert.equal(error.detail, CHANGED);
+    assert.equal(yield* fileSystem.readFileString(file), "my hand edit");
+    assert.equal((yield* projections.getThreadShell(threadId))?.rewindUndo?.rewindId, undoId);
+
+    yield* fileSystem.writeFileString(file, "restored");
+    yield* service.undo({ threadId, rewindId: undoId });
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("an undo replayed after its files went back still finishes", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code_and_conversation"));
+    fake.eventWrite.mockImplementationOnce(() => Effect.fail(new Error("database is locked")));
+
+    yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+
+    yield* service.undo({ threadId, rewindId: undoId });
+    assert.deepEqual(yield* runStatuses, ["completed", "completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo keeps a file that a rewind removed and the user then recreated", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    yield* fileSystem.remove(file);
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code"));
+
+    yield* fileSystem.writeFileString(file, "my new file");
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+
+    assert.equal(error.detail, CHANGED);
+    assert.equal(yield* fileSystem.readFileString(file), "my new file");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("one changed file refuses the whole undo before any other file is touched", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const second = `${cwd}/b.ts`;
+    yield* fileSystem.writeFileString(second, "agent wrote b");
+    fake.rewindFiles.mockImplementation((request) =>
+      Effect.gen(function* () {
+        if (!request.dryRun) {
+          yield* fileSystem.writeFileString(file, "restored").pipe(Effect.orDie);
+          yield* fileSystem.writeFileString(second, "restored b").pipe(Effect.orDie);
+        }
+        return { canRewind: true, filesChanged: [file, second], insertions: 2, deletions: 2 };
+      }),
+    );
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code"));
+
+    yield* fileSystem.writeFileString(second, "my edit");
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+
+    assert.equal(error.detail, "b.ts changed after the rewind, so Undo would overwrite it.");
+    assert.equal(yield* fileSystem.readFileString(file), "restored");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo refuses a path that became a link instead of writing through it", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-rewind-outside-" });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* service.rewind(rewindInput("code"));
+
+    yield* fileSystem.writeFileString(`${outside}/victim`, "restored");
+    yield* fileSystem.remove(file);
+    yield* fileSystem.symlink(`${outside}/victim`, file);
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+
+    assert.equal(error.detail, CHANGED);
+    assert.equal(yield* fileSystem.readFileString(`${outside}/victim`), "restored");
+    assert.equal((yield* projections.getThreadShell(threadId))?.rewindUndo?.rewindId, undoId);
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("undo refuses a parent directory that became a link", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, fileSystem } = yield* workspace;
+    const nested = `${cwd}/src`;
+    const file = `${nested}/a.ts`;
+    yield* fileSystem.makeDirectory(nested);
+    yield* fileSystem.writeFileString(file, "agent wrote this");
+    const local = makeFake({ file });
+    fake.rewindFiles.mockImplementation(local.rewindFiles);
+    yield* seed({ runs: 3, cwd });
+    const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-rewind-outside-" });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* service.rewind(rewindInput("code"));
+
+    // The link target holds the same bytes, so only the parent check can catch this.
+    yield* fileSystem.writeFileString(`${outside}/a.ts`, "restored");
+    yield* fileSystem.remove(nested, { recursive: true });
+    yield* fileSystem.symlink(outside, nested);
+    const error = yield* Effect.flip(service.undo({ threadId, rewindId: undoId }));
+
+    assert.include(error.detail, "src/a.ts");
+    assert.equal(yield* fileSystem.readFileString(`${outside}/a.ts`), "restored");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("putting files back replaces a link at the path instead of following it", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, file, fileSystem } = yield* workspace;
+    const outside = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-rewind-outside-" });
+    const victim = `${outside}/victim`;
+    yield* fileSystem.writeFileString(victim, "someone else's file");
+    fake.rewindFiles.mockImplementation((request) =>
+      Effect.gen(function* () {
+        if (!request.dryRun) {
+          yield* fileSystem.remove(file).pipe(Effect.orDie);
+          yield* fileSystem.symlink(victim, file).pipe(Effect.orDie);
+        }
+        return { canRewind: true, filesChanged: [file], insertions: 1, deletions: 1 };
+      }),
+    );
+    yield* seed({ runs: 3, cwd });
+    fake.rollbackThread.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapter.ProviderAdapterRollbackThreadError({
+          driver,
+          providerThreadId,
+          cause: "refused",
+        }),
+      ),
+    );
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
+
+    assert.equal((yield* fileSystem.lstat(file)).type, "File");
+    assert.equal(yield* fileSystem.readFileString(file), "agent wrote this");
+    assert.equal(yield* fileSystem.readFileString(victim), "someone else's file");
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
