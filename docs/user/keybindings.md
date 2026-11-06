@@ -175,6 +175,9 @@ seconds after the latest action. Right after an action, the shortcut works even
 in a text field such as the composer. Once you type or press another key, the
 field gets its own undo back. Terminals always keep their native shortcut.
 
+`thread.rewind` opens [Rewind](./composer.md#rewind). It has no default shortcut, since pressing
+`Esc` twice also opens it; assign one in **Settings → Keybindings**.
+
 `navigation.back` (`mod+[` by default) and `navigation.forward` (`mod+]`) move
 through the pages you have visited, like a browser's back and forward buttons.
 
