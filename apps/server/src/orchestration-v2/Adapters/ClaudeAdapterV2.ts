@@ -7993,7 +7993,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Per-turn because the prompt's checkpoint still differs from disk only by this turn.
         const readTurnCodeStats = Effect.fnUntraced(function* (context: ActiveClaudeTurnContext) {
           const live = yield* Ref.get(queryContext);
-          if (context.promptUuid === null || live?.nativeThreadId !== context.nativeThreadId) {
+          if (
+            context.promptUuid === null ||
+            live?.nativeThreadId !== context.nativeThreadId ||
+            live.stopping ||
+            (yield* Deferred.isDone(live.closed))
+          ) {
             return undefined;
           }
           const cwd = context.input.runtimePolicy.cwd;

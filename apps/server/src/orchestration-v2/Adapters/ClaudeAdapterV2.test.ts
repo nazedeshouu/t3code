@@ -12372,8 +12372,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const closed = yield* Deferred.make<void>();
+        let statsReads = 0;
         const harness = yield* makeWakeHarnessWithOptions({
           close: () => Deferred.succeed(closed, undefined),
+          rewindFiles: () =>
+            Effect.sync(() => {
+              statsReads++;
+              return { canRewind: false };
+            }),
         });
         const now = yield* DateTime.now;
         yield* harness.runtime.startTurn(
@@ -12445,6 +12451,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.include(terminal.failure.message, "blast-radius");
         // The held tool call is abandoned by closing the query, never answered.
         yield* Deferred.await(closed);
+        assert.equal(statsReads, 0);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
