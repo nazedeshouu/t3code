@@ -8,7 +8,6 @@ import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
 import {
-  deriveAvailableRevertTurnCounts,
   deriveThreadPendingBackgroundTasks,
   presentThreadShellFromProjection,
 } from "./ChatView.logic";
@@ -23,6 +22,9 @@ import {
   reconcileOptimisticUserMessages,
 } from "./chat/optimisticUserMessages";
 import { useTimelineRewind } from "./chat/useTimelineRewind";
+import { RewindDock } from "./chat/RewindDock";
+import { rewindUndoBannerItem } from "./chat/ComposerRewindUndo";
+import { useRewindEscape } from "./chat/useRewindEscape";
 import { useThreadLifecycle } from "./chat/useThreadLifecycle";
 import { useRightPanelActions } from "./chat/useRightPanelActions";
 import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
@@ -140,7 +142,6 @@ import {
   derivePhase,
   deriveActiveWorkStartedAt,
   deriveCanInterruptRunningThread,
-  findRevertCheckpoint,
   isLatestRunSettled,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -269,7 +270,8 @@ import {
   DeviceSetupDialogHost,
   openBranchRestoreConfirm,
   PullRequestThreadDialogHost,
-  RevertConfirmHost,
+  openRewindDock,
+  useRewindDockRequest,
 } from "./chat/ChatOverlayHosts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { useCitedHistory } from "./chat/citationProcedure";
@@ -797,6 +799,12 @@ export default function ChatView(props: ChatViewProps) {
       )
     : undefined;
   const isServerThread = serverThread !== null;
+  const rewindAvailable = !embedded && isServerThread && canOperateThread;
+  const rewindDockRequest = useRewindDockRequest(rewindAvailable ? routeThreadKey : null);
+  const onRewindToMessageStable = useStableCallback((messageId: MessageId) =>
+    openRewindDock(routeThreadKey, messageId),
+  );
+  const onRewindCommandStable = useStableCallback(() => openRewindDock(routeThreadKey));
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const serverLatestRun =
     serverProjection === null ? null : deriveLatestThreadRun(serverProjection);
@@ -1587,12 +1595,6 @@ export default function ChatView(props: ChatViewProps) {
     panelAnimationDurationMs,
   );
   const turnDiffSummaries = useThreadCheckpointSummaries(routeThreadDetailRef);
-  const availableRevertTurnCounts = deriveAvailableRevertTurnCounts(serverProjection);
-  // A paged history window cannot identify the first loaded run as the thread start.
-  const threadStartCheckpointReady =
-    !serverThreadHistory.hasMoreHistory &&
-    findRevertCheckpoint(serverProjection?.checkpoints ?? [], 0) !== undefined;
-
   const workspaceMutationId = deriveWorkspaceMutationId(
     serverVisibleTurnItems,
     turnDiffSummaries.at(-1)?.completedAt ?? null,
@@ -2098,6 +2100,7 @@ export default function ChatView(props: ChatViewProps) {
     anchorNewTurn,
     attachTimelineViewport,
     attachComposerOverlay: attachFollowComposerOverlay,
+    holdTimeline,
   } = useTimelineFollow({
     legendListRef,
     composerTimelineInset,
@@ -2605,6 +2608,11 @@ export default function ChatView(props: ChatViewProps) {
       freshSessionAvailable && freshSessionArmed && activePendingApproval === null
         ? [freshSessionBannerItem(() => disarmFreshSession(routeThreadKey))]
         : [];
+    const rewindUndo = activeThreadShell?.rewindUndo;
+    const rewindUndoItems =
+      rewindUndo && rewindAvailable
+        ? [rewindUndoBannerItem({ undo: rewindUndo, onUndo: () => onUndoRewindStable(rewindUndo) })]
+        : [];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
@@ -2614,6 +2622,7 @@ export default function ChatView(props: ChatViewProps) {
         ...usageLimitsItems,
         ...projectCloneItems,
         ...freshSessionItems,
+        ...rewindUndoItems,
         ...systemComposerBannerItems,
       ];
     }
@@ -2625,6 +2634,7 @@ export default function ChatView(props: ChatViewProps) {
       ...usageLimitsItems,
       ...projectCloneItems,
       ...freshSessionItems,
+      ...rewindUndoItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem({
         mismatchKey: activeBranchMismatchKey,
@@ -2736,6 +2746,10 @@ export default function ChatView(props: ChatViewProps) {
         if (!canInterruptRunningThread) return false;
         if (!event.repeat) void onInterruptStable();
       },
+      "thread.rewind": ({ event }) => {
+        if (!rewindAvailable) return false;
+        if (!event.repeat) openRewindDock(routeThreadKey);
+      },
     },
     fallback: (command) => {
       const scriptId = projectScriptIdFromCommand(command);
@@ -2743,6 +2757,12 @@ export default function ChatView(props: ChatViewProps) {
       const script = activeProjectScripts.find((entry) => entry.id === scriptId);
       return script ? () => void runProjectScriptStable(script) : undefined;
     },
+  });
+
+  useRewindEscape({
+    enabled: rewindAvailable && rewindDockRequest === null && !backgroundThread,
+    threadFindActive: isThreadFindActive,
+    onOpen: () => openRewindDock(routeThreadKey),
   });
 
   // A focused desktop browser page forwards these chords as menu actions.
@@ -2755,7 +2775,10 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, [embedded, toggleRightPanelStable, toggleRightPanelMaximizedStable]);
 
-  usePasteToFocusComposer(embedded ? null : activeThreadId, composerRef);
+  usePasteToFocusComposer(
+    embedded || rewindDockRequest !== null ? null : activeThreadId,
+    composerRef,
+  );
   // A delegated task is a remote thread's subagent.
   const isSubagentThread =
     activeThread?.lineage.relationshipToParent === "subagent" || delegatedFrom !== null;
@@ -2802,26 +2825,23 @@ export default function ChatView(props: ChatViewProps) {
                 : null;
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const sendSideChatStable = useStableCallback((prompt: string) => sideChat.open(prompt));
-  const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
-    useTimelineRewind({
-      environmentId,
-      routeThreadRef,
-      routeThreadKey,
-      currentRouteThreadKeyRef,
-      serverProjection,
-      activeThread,
-      timelineMessages,
-      phase,
-      isSendBusy,
-      isRevertingCheckpoint,
-      supportsConversationRollback,
-      activeEnvironmentUnavailable,
-      activeEnvironmentUnavailableLabel,
-      promptRef,
-      composerRef,
-      composerDraftTarget,
-      setThreadError,
-    });
+  const { onForkFromRunStable, onRewindStable, onUndoRewindStable } = useTimelineRewind({
+    environmentId,
+    routeThreadRef,
+    routeThreadKey,
+    currentRouteThreadKeyRef,
+    activeThread,
+    timelineMessages,
+    phase,
+    isSendBusy,
+    canInterrupt: canInterruptRunningThread,
+    activeEnvironmentUnavailable,
+    activeEnvironmentUnavailableLabel,
+    promptRef,
+    composerRef,
+    composerDraftTarget,
+    setThreadError,
+  });
   const onCompactContext = () => {
     if (compactDisabled) return;
     void sendStandaloneCommand("/compact", "Failed to compact context.");
@@ -2941,6 +2961,7 @@ export default function ChatView(props: ChatViewProps) {
     setKeepFullHistory,
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
+    onRewindCommand: rewindAvailable ? onRewindCommandStable : undefined,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -3442,10 +3463,8 @@ export default function ChatView(props: ChatViewProps) {
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}
-                  supportsConversationRollback={supportsConversationRollback}
-                  threadStartCheckpointReady={threadStartCheckpointReady}
-                  availableRevertTurnCounts={availableRevertTurnCounts}
-                  onRevertToTurnCount={onRevertTimelineTurnStable}
+                  {...(rewindAvailable ? { onRewindToMessage: onRewindToMessageStable } : {})}
+                  rewindPreviewOpen={rewindDockRequest !== null}
                   onUseArtifactTemplate={insertArtifactTemplateStable}
                   onSendAppMessage={sendAppMessageStable}
                   isRevertingCheckpoint={isRevertingCheckpoint}
@@ -3474,7 +3493,7 @@ export default function ChatView(props: ChatViewProps) {
                 />
               </WorkspaceMutationIdContext>
 
-              {showScrollToBottom && !isThreadFindActive && (
+              {showScrollToBottom && !isThreadFindActive && rewindDockRequest === null && (
                 <ScrollToEndButton
                   bottom={scrollToEndClearance + 4}
                   summary={scrollToEndSummary}
@@ -3489,7 +3508,7 @@ export default function ChatView(props: ChatViewProps) {
                 setComposerOverlayElement(overlay);
                 attachFollowComposerOverlay(overlay);
               }}
-              inert={isRevertingCheckpoint}
+              inert={isRevertingCheckpoint && rewindDockRequest === null}
               data-chat-composer-overlay="true"
               className={
                 isDraftHeroState
@@ -3536,7 +3555,25 @@ export default function ChatView(props: ChatViewProps) {
                           inert={queuedRunEdit.isSaving}
                           aria-busy={queuedRunEdit.isSaving}
                         >
-                          <div className="relative z-10">
+                          {rewindDockRequest !== null && activeThread ? (
+                            <RewindDock
+                              request={rewindDockRequest}
+                              environmentId={environmentId}
+                              threadId={activeThread.id}
+                              threadKey={routeThreadKey}
+                              supportsConversationRollback={supportsConversationRollback}
+                              composerRef={composerRef}
+                              holdTimeline={holdTimeline}
+                              onRewind={onRewindStable}
+                            />
+                          ) : null}
+                          <div
+                            inert={rewindDockRequest !== null}
+                            className={cn(
+                              "relative z-10",
+                              rewindDockRequest !== null && "invisible absolute inset-x-0 top-0",
+                            )}
+                          >
                             {showProviderSubagentBar ? (
                               <ProviderSubagentBar
                                 provider={selectedProviderEntry ?? null}
@@ -3632,6 +3669,9 @@ export default function ChatView(props: ChatViewProps) {
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
                                 }
+                                {...(rewindAvailable
+                                  ? { onRewindCommand: onRewindCommandStable }
+                                  : {})}
                                 onUsageLimitsCommand={
                                   usageLimitsOffered &&
                                   usageLimitsKey !== null &&
@@ -3988,7 +4028,6 @@ export default function ChatView(props: ChatViewProps) {
         </ChatRightPanel>
       ) : null}
 
-      <RevertConfirmHost threadKey={routeThreadKey} onConfirm={onConfirmRevertStable} />
       {embedded ? null : <LinkPullRequestDialogHost />}
       <ThreadVisitWatermark threadRef={routeThreadRef} />
       <ExpandedImageDialogHost threadKey={routeThreadKey} />

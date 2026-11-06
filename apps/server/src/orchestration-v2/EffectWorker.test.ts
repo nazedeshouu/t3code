@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  MessageId,
   CheckpointId,
   CheckpointScopeId,
   CommandId,
@@ -24,6 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import * as ThreadRewindService from "./ThreadRewindService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
@@ -84,6 +86,7 @@ function layerExecutorFor(input: {
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
+  readonly rewind?: Partial<ThreadRewindService.ThreadRewindServiceShape>;
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
@@ -143,8 +146,16 @@ function layerExecutorFor(input: {
       CheckpointRollbackService.CheckpointRollbackServiceV2,
       CheckpointRollbackService.CheckpointRollbackServiceV2.of({
         execute: input.rollback ?? (() => Effect.void),
+        ensureWorktree: () => Effect.void,
+        openSession: () => Effect.die("unused openSession"),
+        rollbackConversation: () => Effect.die("unused rollbackConversation"),
+        rollbackEvents: () => Effect.die("unused rollbackEvents"),
       }),
     ),
+    Layer.mock(ThreadRewindService.ThreadRewindService)({
+      expireUndo: () => Effect.void,
+      ...input.rewind,
+    }),
     Layer.succeed(
       RuntimeRequestService.RuntimeRequestServiceV2,
       RuntimeRequestService.RuntimeRequestServiceV2.of({
@@ -285,6 +296,72 @@ it.effect.each([
       yield* Effect.flip(executor.execute(rollback, { willRetry: false }));
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(failures), [message]);
+  }),
+);
+
+it.effect("records a rewind refusal once and ends the effect", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const dispatched: Array<unknown> = [];
+    const layer = layerExecutorFor({
+      events,
+      threads: {
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command);
+            return { sequence: 1, storedEvents: [] };
+          }),
+      },
+      rewind: {
+        rewind: () =>
+          Effect.fail(
+            new ThreadRewindService.ThreadRewindError({
+              threadId,
+              detail: "This turn has no file checkpoint.",
+            }),
+          ),
+      },
+    });
+    const now = yield* DateTime.now;
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        request: {
+          type: "thread.rewind",
+          messageId: MessageId.make("message:rewind"),
+          mode: "code",
+        },
+      });
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(dispatched, [
+      {
+        type: "checkpoint.rollback.fail",
+        commandId: CommandId.make("command:restart:detach:rollback-failed"),
+        threadId,
+        requestId: CommandId.make("command:restart:detach"),
+        message: "This turn has no file checkpoint.",
+      },
+    ]);
+  }),
+);
+
+it.effect("ends the undo window before starting the next turn", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      rewind: { expireUndo: () => Ref.update(events, (current) => [...current, "expire"]) },
+    });
+    const now = yield* DateTime.now;
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* executor.execute({
+        ...restartEffect(now, { type: "detach" }),
+        request: { type: "provider-turn.start", runId },
+      });
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(events), ["expire", "start"]);
   }),
 );
 

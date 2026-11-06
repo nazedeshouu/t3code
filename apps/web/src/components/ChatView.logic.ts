@@ -1,4 +1,3 @@
-import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
 import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
@@ -71,7 +70,8 @@ import {
 } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { environmentThreadDetails } from "../state/threads";
+import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
+import { waitForAtomValue } from "../state/waitForAtomValue";
 import {
   filterTerminalContextsWithText,
   formatTerminalContextLabel,
@@ -90,7 +90,7 @@ import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/compose
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { type ComposerSubmissionIntent } from "../composer-logic";
 import type { ReviewCommentContext } from "../reviewCommentContext";
-import { derivePhase, type TimelineEntry } from "../session-logic";
+import { deriveCanInterruptRunningThread, derivePhase, type TimelineEntry } from "../session-logic";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
 import type { DesktopPreviewOverlay } from "../previewStateStore";
 import type { RightPanelSurface } from "../rightPanelStore";
@@ -890,39 +890,20 @@ export function getStartedThreadModelChangeBlockReason(input: {
   };
 }
 
-export async function waitForRevertedMessage(
+/**
+ * Runs `dispatch` and resolves once `finished` holds, since a rewind and its undo both finish after
+ * the command is accepted. A failed one rejects with the server's own reason.
+ */
+export async function waitForThreadRewind(
   threadRef: ScopedThreadRef,
-  turnCount: number,
-  requestId: CommandId,
-  revert: () => Promise<void>,
+  commandId: CommandId,
+  finished: (thread: ThreadStructure["thread"]) => boolean,
+  dispatch: () => Promise<void>,
   timeoutMs = 120_000,
 ): Promise<void> {
   const threadAtom = environmentThreadDetails.stateAtom(threadRef);
-  const readProjection = () => Option.getOrNull(appAtomRegistry.get(threadAtom).data);
-  const initial = readProjection();
-  const providerThreadId = initial?.thread.activeProviderThreadId;
-  const initialProviderThread = initial?.providerThreads.find(
-    (providerThread) => providerThread.id === providerThreadId,
-  );
-  const initialProviderThreadIds = new Set(initial?.providerThreads.map((thread) => thread.id));
-  // Paging can omit the source run. Rollback commits the entire settled suffix atomically.
-  const witness = initial?.runs.reduce<(typeof initial.runs)[number] | undefined>((latest, run) => {
-    if (
-      run.ordinal <= turnCount ||
-      (run.status !== "completed" &&
-        run.status !== "interrupted" &&
-        run.status !== "failed" &&
-        run.status !== "cancelled")
-    )
-      return latest;
-    return latest === undefined || run.ordinal > latest.ordinal ? run : latest;
-  }, undefined);
-  if (witness === undefined) {
-    throw new Error("The thread has changed. Select a message to rewind again.");
-  }
   return new Promise<void>((resolve, reject) => {
     let settled = false;
-    let accepted = false;
     let unsubscribe = () => {};
     let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
     const finish = (error?: unknown) => {
@@ -934,41 +915,35 @@ export async function waitForRevertedMessage(
       else resolve();
     };
     const inspect = () => {
-      const thread = readProjection();
-      if (!thread) return;
-      const failure = thread.thread.rollbackFailure;
-      if (failure?.requestId === requestId) {
-        finish(new Error(failure.message));
-        return;
-      }
-      if (
-        accepted &&
-        thread.providerThreads.some(
-          (providerThread) =>
-            (providerThread.id === providerThreadId ||
-              // Claude resets to a fresh root session when rewinding to thread start.
-              (turnCount === 0 &&
-                providerThread.ownerNodeId === null &&
-                providerThread.appThreadId === initial?.thread.id &&
-                providerThread.providerInstanceId === initialProviderThread?.providerInstanceId &&
-                !initialProviderThreadIds.has(providerThread.id))) &&
-            providerThread.lastRunOrdinal === (turnCount === 0 ? null : turnCount),
-        ) &&
-        thread.runs.some((run) => run.id === witness.id && run.status === "rolled_back")
-      )
+      const thread = Option.getOrNull(appAtomRegistry.get(threadAtom).data)?.thread;
+      if (thread?.rollbackFailure?.requestId === commandId) {
+        finish(new Error(thread.rollbackFailure.message));
+      } else if (thread && finished(thread)) {
         finish();
+      }
     };
     unsubscribe = appAtomRegistry.subscribe(threadAtom, inspect);
     timeout = globalThis.setTimeout(() => {
       finish(new Error("Timed out waiting for the thread to rewind."));
     }, timeoutMs);
-    Promise.resolve()
-      .then(revert)
-      .then(() => {
-        accepted = true;
-        inspect();
-      }, finish);
+    Promise.resolve().then(dispatch).then(inspect, finish);
   });
+}
+
+/** Asks the running turn to stop and waits for the thread to be idle. */
+export async function stopThreadBeforeRewind(
+  threadRef: ScopedThreadRef,
+  stop: () => Promise<void>,
+  timeoutMs = 10_000,
+): Promise<void> {
+  await stop();
+  const idle = await waitForAtomValue({
+    registry: appAtomRegistry,
+    atom: environmentThreadShells.threadShellAtom(threadRef),
+    predicate: (thread) => !deriveCanInterruptRunningThread(true, thread?.runtime ?? null),
+    timeoutMs,
+  });
+  if (!idle) throw new Error("The current turn did not stop in time. Try again once it has.");
 }
 
 export interface LocalDispatchSnapshot {
@@ -1473,46 +1448,4 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
       pullRequests: projection.thread.pullRequests,
     }),
   ];
-}
-
-/**
- * Run ordinals the conversation can be reverted to: those whose provider turn belongs to the
- * active provider thread, plus 0 for the thread start. Empty without a live provider session
- * on the thread's selected instance.
- */
-export function deriveAvailableRevertTurnCounts(projection: ThreadStructure | null) {
-  const available = new Set<number>();
-  const providerThread = projection?.providerThreads.find(
-    (candidate) => candidate.id === projection.thread.activeProviderThreadId,
-  );
-  if (
-    !providerThread?.providerSessionId ||
-    providerThread.providerInstanceId !== projection?.thread.modelSelection.instanceId
-  )
-    return available;
-  available.add(0);
-  const attemptsById = new Map(projection.attempts.map((attempt) => [attempt.id, attempt]));
-  const providerTurnsById = new Map<
-    OrchestrationV2ProviderTurn["id"],
-    OrchestrationV2ProviderTurn
-  >();
-  const latestTurnByAttempt = new Map<RunAttemptId, OrchestrationV2ProviderTurn>();
-  for (const turn of projection.providerTurns) {
-    providerTurnsById.set(turn.id, turn);
-    if (turn.runAttemptId === null) continue;
-    const latest = latestTurnByAttempt.get(turn.runAttemptId);
-    if (latest === undefined || turn.ordinal > latest.ordinal) {
-      latestTurnByAttempt.set(turn.runAttemptId, turn);
-    }
-  }
-  for (const run of projection.runs) {
-    if (run.activeAttemptId === null) continue;
-    const attempt = attemptsById.get(run.activeAttemptId);
-    const providerTurn =
-      latestTurnByAttempt.get(run.activeAttemptId) ??
-      (attempt?.providerTurnId == null ? undefined : providerTurnsById.get(attempt.providerTurnId));
-    // A ready file checkpoint alone cannot restore the provider conversation.
-    if (providerTurn?.providerThreadId === providerThread.id) available.add(run.ordinal);
-  }
-  return available;
 }

@@ -5,7 +5,6 @@ import {
   planComposerTurn,
   snapshotComposerSend,
   withMessageContext,
-  deriveAvailableRevertTurnCounts,
 } from "./ChatView.logic";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
@@ -19,8 +18,6 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
-  ProviderSessionId,
-  ProviderThreadId,
   ThreadId,
   RunId,
   TurnItemId,
@@ -50,7 +47,7 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
-  waitForRevertedMessage,
+  waitForThreadRewind,
 } from "./ChatView.logic";
 
 const environmentId = EnvironmentId.make("environment-local");
@@ -726,270 +723,65 @@ describe("worktree setup visibility", () => {
   });
 });
 
-describe("waitForRevertedMessage", () => {
+describe("waitForThreadRewind", () => {
   const threadRef = { environmentId: EnvironmentId.make("env-1"), threadId: ThreadId.make("t") };
-  const messageId = MessageId.make("message-2");
-  const requestId = CommandId.make("rollback-1");
+  const commandId = CommandId.make("rewind-1");
+  const undoNamesCommand: Parameters<typeof waitForThreadRewind>[2] = (thread) =>
+    thread.rewindUndo?.rewindId === commandId;
 
-  function projectionAtom() {
-    const base = makeThreadProjectionFixture();
-    const providerThreadId = ProviderThreadId.make("provider-thread");
-    const projection = {
-      ...base,
-      thread: { ...base.thread, activeProviderThreadId: providerThreadId },
-      providerThreads: [
-        {
-          id: providerThreadId,
-          driver: "codex",
-          providerInstanceId: base.thread.providerInstanceId,
-          providerSessionId: ProviderSessionId.make("provider-session"),
-          appThreadId: base.thread.id,
-          ownerNodeId: null,
-          nativeThreadRef: null,
-          nativeConversationHeadRef: null,
-          status: "idle",
-          firstRunOrdinal: 1,
-          lastRunOrdinal: 4,
-          handoffIds: [],
-          forkedFrom: null,
-          createdAt: base.updatedAt,
-          updatedAt: base.updatedAt,
-        },
-      ],
-      runs: [1, 2, 3, 4].map((ordinal) => ({
-        id: RunId.make(`run-${ordinal}`),
-        threadId: base.thread.id,
-        ordinal,
-        providerInstanceId: base.thread.providerInstanceId,
-        modelSelection: base.thread.modelSelection,
-        providerThreadId,
-        userMessageId: MessageId.make(`message-${ordinal}`),
-        rootNodeId: null,
-        activeAttemptId: null,
-        status: "completed",
-        requestedAt: base.updatedAt,
-        startedAt: base.updatedAt,
-        completedAt: base.updatedAt,
-        checkpointId: null,
-        contextHandoffId: null,
-      })),
-      messages: [
-        {
-          id: messageId,
-          threadId: base.thread.id,
-          runId: RunId.make("run-2"),
-          nodeId: null,
-          role: "user",
-          text: "second",
-          attachments: [],
-          streaming: false,
-          createdAt: base.updatedAt,
-          updatedAt: base.updatedAt,
-        },
-      ],
-    } as unknown as ReturnType<typeof makeThreadProjectionFixture>;
+  function threadAtom() {
+    const projection = makeThreadProjectionFixture();
     const state = Atom.make({ data: Option.some(projection) });
     vi.spyOn(environmentThreadDetails, "stateAtom").mockReturnValue(state as never);
-    return { state, projection };
+    const publish = (thread: Partial<typeof projection.thread>) =>
+      appAtomRegistry.set(state, {
+        data: Option.some({ ...projection, thread: { ...projection.thread, ...thread } }),
+      });
+    return publish;
   }
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("rejects with the projected reason when the rollback fails for good", async () => {
-    const { state, projection } = projectionAtom();
-    const waiting = waitForRevertedMessage(threadRef, 1, requestId, async () => {});
-    await Promise.resolve();
-    appAtomRegistry.set(state, {
-      data: Option.some({
-        ...projection,
-        thread: {
-          ...projection.thread,
-          rollbackFailure: { requestId, message: "The provider could not roll back." },
-        },
-      }),
-    });
-
-    await expect(waiting).rejects.toThrow("The provider could not roll back.");
+  const undoFor = (rewindId: CommandId) => ({
+    rewindId,
+    mode: "conversation" as const,
+    messageId: MessageId.make("message-2"),
+    removedMessageCount: 2,
+    filesRestored: 0,
+    createdAt: DateTime.makeUnsafe(0),
   });
 
-  it.each([
-    ["same", "streamed"],
-    ["replacement", "streamed"],
-    ["replacement", "refetched"],
-  ] as const)(
-    "waits for the retained rollback suffix when the edited message and run are paged out (%s provider, %s)",
-    async (providerIdentity, projectionSource) => {
-      vi.useFakeTimers();
-      const { state, projection } = projectionAtom();
-      const latestRunId = RunId.make("latest-run-9");
-      const latestRun = {
-        ...projection.runs[3]!,
-        id: latestRunId,
-        ordinal: 9,
-        userMessageId: MessageId.make("latest-message-9"),
-        status: "cancelled" as const,
-      };
-      const bounded = {
-        ...projection,
-        messages: [],
-        providerThreads: projection.providerThreads.map((thread) => ({
-          ...thread,
-          lastRunOrdinal: 9,
-        })),
-        runs: [
-          {
-            ...latestRun,
-            id: RunId.make("old-rewound-run-3"),
-            userMessageId: MessageId.make("old-rewound-message-3"),
-            ordinal: 3,
-            status: "rolled_back" as const,
-          },
-          latestRun,
-        ],
-      };
-      const oldProviderThread = bounded.providerThreads[0]!;
-      const completedProviderThread = {
-        ...oldProviderThread,
-        ...(providerIdentity === "replacement"
-          ? { id: ProviderThreadId.make("replacement-provider-thread"), firstRunOrdinal: null }
-          : {}),
-        lastRunOrdinal: null,
-      };
-      appAtomRegistry.set(state, { data: Option.some(bounded) });
-      let outcome = "pending";
-      const waiting = waitForRevertedMessage(threadRef, 0, requestId, async () => {}).then(
-        () => {
-          outcome = "reverted";
-        },
-        (error: Error) => {
-          outcome = error.message;
-        },
-      );
-
-      try {
-        await vi.advanceTimersByTimeAsync(0);
-        expect(outcome).toBe("pending");
-
-        appAtomRegistry.set(state, {
-          data: Option.some({
-            ...bounded,
-            thread: {
-              ...bounded.thread,
-              activeProviderThreadId:
-                projectionSource === "refetched"
-                  ? completedProviderThread.id
-                  : oldProviderThread.id,
-            },
-            providerThreads:
-              providerIdentity === "replacement"
-                ? [oldProviderThread, completedProviderThread]
-                : [completedProviderThread],
-            runs: bounded.runs.map((run) =>
-              run.id === latestRunId ? { ...run, status: "rolled_back" as const } : run,
-            ),
-          }),
-        });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(outcome).toBe("reverted");
-        await waiting;
-      } finally {
-        vi.clearAllTimers();
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("waits for the requested target when another client finishes a shallower rewind", async () => {
-    vi.useFakeTimers();
-    const { state, projection } = projectionAtom();
-    let outcome = "pending";
-    const waiting = waitForRevertedMessage(threadRef, 1, requestId, async () => {}).then(
-      () => {
-        outcome = "reverted";
-      },
-      (error: Error) => {
-        outcome = error.message;
-      },
-    );
-
-    try {
-      await vi.advanceTimersByTimeAsync(0);
-      expect(outcome).toBe("pending");
-
-      // Our command is accepted while the earlier target-3 effect is still running.
-      const shallowerRewind = {
-        ...projection,
-        thread: { ...projection.thread, rollbackRequestId: requestId, rollbackFailure: null },
-        providerThreads: projection.providerThreads.map((thread) => ({
-          ...thread,
-          lastRunOrdinal: 3,
-        })),
-        runs: projection.runs.map((run) =>
-          run.ordinal > 3 ? { ...run, status: "rolled_back" as const } : run,
-        ),
-      };
-      appAtomRegistry.set(state, { data: Option.some(shallowerRewind) });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(outcome).toBe("pending");
-
-      appAtomRegistry.set(state, {
-        data: Option.some({
-          ...shallowerRewind,
-          providerThreads: shallowerRewind.providerThreads.map((thread) => ({
-            ...thread,
-            lastRunOrdinal: 1,
-          })),
-          runs: shallowerRewind.runs.map((run) =>
-            run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
-          ),
-        }),
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(outcome).toBe("reverted");
-      await waiting;
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
+  it("settles once the thread shows the rewind finished", async () => {
+    const publish = threadAtom();
+    const settled = vi.fn();
+    const waiting = waitForThreadRewind(
+      threadRef,
+      commandId,
+      undoNamesCommand,
+      async () => {},
+    ).then(settled);
+    publish({ rewindUndo: undoFor(CommandId.make("another-client")) });
+    expect(settled).not.toHaveBeenCalled();
+    publish({ rewindUndo: undoFor(commandId) });
+    await waiting;
+    expect(settled).toHaveBeenCalledOnce();
   });
 
-  it("rejects a stale edit already rewound by another client during attachment preparation", async () => {
-    vi.useFakeTimers();
-    const { state, projection } = projectionAtom();
-    appAtomRegistry.set(state, {
-      data: Option.some({
-        ...projection,
-        thread: { ...projection.thread, rollbackRequestId: CommandId.make("other-client-rewind") },
-        messages: [],
-        providerThreads: projection.providerThreads.map((thread) => ({
-          ...thread,
-          lastRunOrdinal: 1,
-        })),
-        runs: projection.runs.map((run) =>
-          run.ordinal > 1 ? { ...run, status: "rolled_back" as const } : run,
-        ),
-      }),
+  it("rejects with the server's reason, including one that beat the dispatch", async () => {
+    const publish = threadAtom();
+    const waiting = waitForThreadRewind(threadRef, commandId, undoNamesCommand, async () => {
+      publish({ rollbackFailure: { requestId: commandId, message: "Claude refused." as never } });
     });
-    const revert = vi.fn(async () => {});
-    let outcome = "pending";
-    const waiting = waitForRevertedMessage(threadRef, 1, requestId, revert).then(
-      () => {
-        outcome = "reverted";
-      },
-      () => {
-        outcome = "rejected";
-      },
-    );
+    await expect(waiting).rejects.toThrow("Claude refused.");
+  });
 
-    try {
-      await vi.advanceTimersByTimeAsync(0);
-      expect(outcome).toBe("rejected");
-      expect(revert).not.toHaveBeenCalled();
-      await waiting;
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-    }
+  it("rejects when the command itself fails", async () => {
+    threadAtom();
+    await expect(
+      waitForThreadRewind(threadRef, commandId, undoNamesCommand, async () => {
+        throw new Error("Unavailable mode.");
+      }),
+    ).rejects.toThrow("Unavailable mode.");
   });
 });
 
@@ -1161,58 +953,5 @@ describe("boundAttachmentIds", () => {
     expect(
       boundAttachmentIds([{ id: "upload-1" }, {}], [{ id: "local-1" }, { id: "local-2" }]),
     ).toEqual(["upload-1", "local-2"]);
-  });
-});
-
-describe("deriveAvailableRevertTurnCounts", () => {
-  const providerThreadId = ProviderThreadId.make("provider-thread");
-  const otherProviderThreadId = ProviderThreadId.make("other-provider-thread");
-
-  function projection(input: { readonly providerSessionId: ProviderSessionId | null }) {
-    const base = makeThreadProjectionFixture();
-    const run = (ordinal: number) => ({
-      id: RunId.make(`run-${ordinal}`),
-      ordinal,
-      activeAttemptId: `attempt-${ordinal}`,
-    });
-    const turn = (ordinal: number, attempt: number, threadId: ProviderThreadId) => ({
-      id: `turn-${attempt}-${ordinal}`,
-      runAttemptId: `attempt-${attempt}`,
-      ordinal,
-      providerThreadId: threadId,
-    });
-    return {
-      ...base,
-      thread: { ...base.thread, activeProviderThreadId: providerThreadId },
-      providerThreads: [
-        {
-          id: providerThreadId,
-          providerInstanceId: base.thread.modelSelection.instanceId,
-          providerSessionId: input.providerSessionId,
-        },
-      ],
-      runs: [run(1), run(2), run(3)],
-      attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, providerTurnId: null })),
-      // Run 2's latest turn moved to another provider thread, so its checkpoint cannot restore
-      // this conversation.
-      providerTurns: [
-        turn(1, 1, providerThreadId),
-        turn(1, 2, providerThreadId),
-        turn(2, 2, otherProviderThreadId),
-        turn(1, 3, providerThreadId),
-      ],
-    } as unknown as ReturnType<typeof makeThreadProjectionFixture>;
-  }
-
-  it("offers the thread start and runs whose latest turn is on the active provider thread", () => {
-    const available = deriveAvailableRevertTurnCounts(
-      projection({ providerSessionId: ProviderSessionId.make("session") }),
-    );
-    expect([...available].toSorted()).toEqual([0, 1, 3]);
-  });
-
-  it("offers nothing without a provider session to rewind", () => {
-    expect(deriveAvailableRevertTurnCounts(projection({ providerSessionId: null })).size).toBe(0);
-    expect(deriveAvailableRevertTurnCounts(null).size).toBe(0);
   });
 });

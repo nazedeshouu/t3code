@@ -608,6 +608,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
+    case "thread.rewind":
+    case "thread.rewind.undo":
     case "thread.background-work.settle":
     case "thread.interrupt.unresponsive":
     case "thread.stop":
@@ -722,6 +724,9 @@ function isLiveRun(run: OrchestrationV2Run): boolean {
 function hasLiveRun(projection: Pick<OrchestrationV2ThreadProjection, "runs">): boolean {
   return projection.runs.some(isLiveRun);
 }
+
+const blocksRewind = (run: OrchestrationV2Run): boolean =>
+  isLiveRun(run) || run.status === "waiting";
 
 function withPullRequestWatch(
   link: ThreadPullRequestLink,
@@ -12643,6 +12648,114 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  /** The file engine and mode checks need I/O, so they run in the effect and fail with a reason. */
+  const dispatchThreadRewind = Effect.fn("Orchestrator.dispatchThreadRewind")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.rewind" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* loadProjectionForCommand(command, ["runs"]);
+    if (projection.runs.some(blocksRewind)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Stop the running turn before rewinding.",
+      });
+    }
+    const target = projection.runs.find(
+      (run) =>
+        run.userMessageId === command.messageId &&
+        run.status !== "rolled_back" &&
+        run.status !== "queued",
+    );
+    if (target === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Message ${command.messageId} is not a rewind target on this thread.`,
+      });
+    }
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId: command.threadId,
+      providerInstanceId: projection.thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...projection.thread,
+        rollbackRequestId: command.commandId,
+        rollbackFailure: null,
+        updatedAt: now,
+      },
+    });
+    yield* Ref.update(effects, (existing) => [
+      ...existing,
+      {
+        id: `effect:${command.commandId}:thread.rewind`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request: {
+          type: "thread.rewind",
+          messageId: command.messageId,
+          mode: command.mode,
+          ...(command.summaryInstructions === undefined
+            ? {}
+            : { summaryInstructions: command.summaryInstructions }),
+        },
+      } satisfies PendingOrchestrationEffectV2,
+    ]);
+  });
+
+  const dispatchThreadRewindUndo = Effect.fn("Orchestrator.dispatchThreadRewindUndo")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "thread.rewind.undo" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* loadProjectionForCommand(command, ["runs"]);
+    if (projection.thread.rewindUndo?.rewindId !== command.rewindId) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Rewind ${command.rewindId} can no longer be undone.`,
+      });
+    }
+    if (projection.runs.some(blocksRewind)) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Stop the running turn before undoing a rewind.",
+      });
+    }
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId: command.threadId,
+      providerInstanceId: projection.thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...projection.thread,
+        rollbackRequestId: command.commandId,
+        rollbackFailure: null,
+        updatedAt: now,
+      },
+    });
+    yield* Ref.update(effects, (existing) => [
+      ...existing,
+      {
+        id: `effect:${command.commandId}:thread.rewind.undo`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request: { type: "thread.rewind.undo", rewindId: command.rewindId },
+      } satisfies PendingOrchestrationEffectV2,
+    ]);
+  });
+
   const dispatchCheckpointRollbackFail = Effect.fn("Orchestrator.dispatchCheckpointRollbackFail")(
     function* (
       command: Extract<
@@ -13810,6 +13923,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "checkpoint.rollback.fail":
         yield* dispatchCheckpointRollbackFail(command, events);
+        break;
+      case "thread.rewind":
+        yield* dispatchThreadRewind(command, events, effects);
+        break;
+      case "thread.rewind.undo":
+        yield* dispatchThreadRewindUndo(command, events, effects);
         break;
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);

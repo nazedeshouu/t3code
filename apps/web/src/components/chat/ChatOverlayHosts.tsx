@@ -179,50 +179,25 @@ export function BranchRestoreConfirmHost(props: {
   );
 }
 
-interface PendingRevert {
-  readonly turnCount: number;
-  readonly messageId: MessageId;
+export interface RewindDockRequest {
+  /** Starts on this message's options; null starts on the list. */
+  readonly messageId: MessageId | null;
+  /** Reopening on another message restarts the dock. */
+  readonly key: number;
 }
 
-const revertConfirmAtom = makeThreadOverlayAtom<PendingRevert>("revert-confirm");
+const rewindDockAtom = makeThreadOverlayAtom<RewindDockRequest>("rewind-dock");
+let nextRewindDockKey = 0;
 
-export function openRevertConfirm(threadKey: string, pending: PendingRevert): void {
-  appAtomRegistry.set(revertConfirmAtom, { threadKey, value: pending });
+export function openRewindDock(threadKey: string, messageId: MessageId | null = null): void {
+  nextRewindDockKey += 1;
+  appAtomRegistry.set(rewindDockAtom, { threadKey, value: { messageId, key: nextRewindDockKey } });
 }
 
-export function RevertConfirmHost(props: {
-  readonly threadKey: string;
-  readonly onConfirm: (turnCount: number, messageId: MessageId, restoreFiles: boolean) => void;
-}) {
-  const pending = useThreadOverlay(revertConfirmAtom, props.threadKey);
-  const confirm = (restoreFiles: boolean) => {
-    if (pending === null) return;
-    closeThreadOverlay(revertConfirmAtom);
-    props.onConfirm(pending.turnCount, pending.messageId, restoreFiles);
-  };
-  return (
-    <AlertDialog
-      open={pending !== null}
-      onOpenChange={(open) => {
-        if (!open) closeThreadOverlay(revertConfirmAtom);
-      }}
-    >
-      <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Edit from here?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Rewind chat to before this message. Your prompt and attachments return to the composer.
-            “Revert files too” also undoes your own edits.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-          <Button variant="destructive-outline" onClick={() => confirm(true)}>
-            Revert files too
-          </Button>
-          <Button onClick={() => confirm(false)}>Revert and keep changes</Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
-  );
+export function closeRewindDock(): void {
+  closeThreadOverlay(rewindDockAtom);
+}
+
+export function useRewindDockRequest(threadKey: string | null): RewindDockRequest | null {
+  return useThreadOverlay(rewindDockAtom, threadKey);
 }
