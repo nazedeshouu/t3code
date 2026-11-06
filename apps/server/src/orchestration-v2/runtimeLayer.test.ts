@@ -1039,6 +1039,57 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("rejects sends and provider changes while a rewind is pending", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const { threadId } = yield* seedFailingRollbackThread("runtime-rewind-pending");
+      const send = (id: string) =>
+        ({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-rewind-pending-send-${id}`),
+          threadId,
+          messageId: MessageId.make(`runtime-rewind-pending-send-${id}`),
+          text: "Sent from another client.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+        }) as const;
+      const providerChanges = (id: string) =>
+        (["provider.switch", "thread.model-selection.set"] as const).map((type) => ({
+          type,
+          commandId: CommandId.make(`runtime-rewind-pending-${type}-${id}`),
+          threadId,
+          modelSelection,
+        }));
+
+      for (const request of [
+        {
+          type: "thread.rewind",
+          messageId: MessageId.make("runtime-rewind-pending-message"),
+          mode: "conversation",
+        },
+        { type: "thread.rewind.undo", rewindId: CommandId.make("runtime-rewind-pending-undone") },
+      ] as const) {
+        const commandId = CommandId.make(`runtime-rewind-pending-${request.type}`);
+        yield* outbox.enqueue([{ id: commandId, commandId, threadId, request }]);
+        for (const command of [send(request.type), ...providerChanges(request.type)]) {
+          const rejected = yield* orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.instanceOf(rejected, Orchestrator.OrchestratorDispatchError);
+          assert.equal(rejected.cause, "This thread is rewinding. Try again when it finishes.");
+        }
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: [request.type],
+          reason: "not under test",
+        });
+      }
+
+      yield* orchestrator.dispatch(send("after"));
+    }),
+  );
+
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

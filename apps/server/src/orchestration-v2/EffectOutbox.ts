@@ -221,6 +221,7 @@ export interface EffectOutboxV2Shape {
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly hasPendingRewind: (threadId: ThreadId) => Effect.Effect<boolean, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -448,6 +449,21 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             isEffectOutboxError(cause)
               ? cause
               : new EffectOutboxError({ operation: "list", cause }),
+          ),
+        ),
+      hasPendingRewind: (threadId) =>
+        sql<{ readonly found: number }>`
+          SELECT 1 AS found
+          FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId}
+            AND status IN ('pending', 'running')
+            AND effect_type IN ('thread.rewind', 'thread.rewind.undo')
+          LIMIT 1
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.length > 0),
+          Effect.mapError(
+            (cause) => new EffectOutboxError({ operation: "hasPendingRewind", cause }),
           ),
         ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(

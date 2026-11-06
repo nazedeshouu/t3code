@@ -13566,6 +13566,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
+  // A send admitted now would start on the provider thread the rewind is about to replace.
+  const rejectDuringRewind = Effect.fn("Orchestrator.rejectDuringRewind")(function* (
+    command: OrchestrationV2ServerCommand,
+    threadId: ThreadId,
+  ) {
+    if (yield* effectOutbox.hasPendingRewind(threadId).pipe(mapDispatchError(command))) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This thread is rewinding. Try again when it finishes.",
+      });
+    }
+  });
+
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId>,
@@ -13586,6 +13600,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.command_type": command.type,
       "orchestration_v2.thread_id": commandThreadId(command),
     });
+    if (
+      command.type === "message.dispatch" ||
+      command.type === "provider.switch" ||
+      command.type === "thread.model-selection.set"
+    ) {
+      yield* rejectDuringRewind(command, command.threadId);
+    }
 
     const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
     const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
