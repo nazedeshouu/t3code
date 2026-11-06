@@ -762,6 +762,39 @@ it.effect("a later conversation rewind replaces an undelivered summary until it 
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
+it.effect("offers no conversation rewind on a provider thread without a session", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd });
+    const eventSink = yield* EventSink.EventSinkV2;
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    const [providerThread] = providerThreads;
+    assert.isDefined(providerThread);
+    if (providerThread === undefined) return;
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("seed:detached"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId: instanceId,
+          occurredAt: yield* DateTime.now,
+          payload: { ...providerThread, providerSessionId: null },
+        },
+      ],
+    });
+
+    const preview = yield* service.preview({ threadId, messageId: MESSAGE(1) });
+    assert.notInclude(preview.modes, "conversation");
+    const error = yield* Effect.flip(service.rewind(rewindInput("conversation", 1)));
+    assert.equal(error.detail, "This thread has no provider conversation to rewind.");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
 it.effect("expiring the undo drops the stash and the stale refs it kept", () => {
   const fake = makeFake({});
   return Effect.gen(function* () {

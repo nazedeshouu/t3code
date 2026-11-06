@@ -72,6 +72,7 @@ const UNDO_UNAVAILABLE = "This rewind can no longer be undone.";
 const REWIND_FAILED = "The rewind could not finish. Nothing was changed.";
 const NO_FILE_CHECKPOINT = "This turn has no file checkpoint, so its code can't be restored.";
 const EARLIER_SESSION = "This turn's file checkpoints stayed with an earlier provider session.";
+const NO_CONVERSATION = "This thread has no provider conversation to rewind.";
 
 /** A refusal or failure the user sees through `rollbackFailure`. Retrying it would not help. */
 export class ThreadRewindError extends Schema.TaggedError<ThreadRewindError>()(
@@ -168,6 +169,8 @@ interface LoadedRewind {
 }
 
 const conversationBlock = ({ context, providerThread, capabilities }: LoadedRewind) => {
+  // A queued or imported provider thread has no session to roll back in.
+  if (providerThread.providerSessionId === null) return NO_CONVERSATION;
   if (
     !capabilities.threads.canRollbackThread ||
     !capabilities.checkpointing.providerCanRollbackConversation ||
@@ -342,7 +345,7 @@ export const layer = Layer.effect(
       }
       const { providerThread } = context;
       if (providerThread === undefined) {
-        return yield* refuse(threadId, "This thread has no provider conversation to rewind.");
+        return yield* refuse(threadId, NO_CONVERSATION);
       }
       const adapter = yield* adapters.get(context.thread.modelSelection.instanceId);
       return {
