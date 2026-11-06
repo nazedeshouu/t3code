@@ -61,6 +61,24 @@ const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
   ),
 );
 
+it.each([
+  ["rollback-target-invalid", "This point in the thread can no longer be restored."],
+  ["provider-turn-unavailable", "The provider no longer has this turn"],
+  ["unexpected-failure", CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE],
+] as const)("explains a %s failure without internal ids", (reason, message) => {
+  const threadId = ThreadId.make("thread:rollback-reason");
+  const client = CheckpointRollbackService.rollbackFailureClientMessage(
+    new CheckpointRollbackService.CheckpointRollbackExecutionError({
+      reason,
+      threadId,
+      providerThreadId: ProviderThreadId.make("provider-thread:rollback-reason"),
+      checkpointId: CheckpointId.make("checkpoint:rollback-reason"),
+    }),
+  );
+  assert.include(client, message);
+  assert.notInclude(client, "rollback-reason");
+});
+
 it.effect.each(["initial", "waiting"])(
   "rejects a non-ready checkpoint from %s before opening a session or restoring files",
   (state) => {

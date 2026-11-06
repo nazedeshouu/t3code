@@ -1011,6 +1011,34 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("rejects a rewind during a run and an undo with a stale rewind id", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const { threadId } = yield* seedFailingRollbackThread("runtime-rewind-guards");
+
+      const running = yield* orchestrator
+        .dispatch({
+          type: "thread.rewind",
+          commandId: CommandId.make("runtime-rewind-guards-rewind"),
+          threadId,
+          messageId: MessageId.make("runtime-rewind-guards-message"),
+          mode: "conversation",
+        })
+        .pipe(Effect.flip);
+      assert.include(running.message, "thread.rewind");
+
+      const stale = yield* orchestrator
+        .dispatch({
+          type: "thread.rewind.undo",
+          commandId: CommandId.make("runtime-rewind-guards-undo"),
+          threadId,
+          rewindId: CommandId.make("runtime-rewind-guards-old"),
+        })
+        .pipe(Effect.flip);
+      assert.include(stale.message, "thread.rewind.undo");
+    }),
+  );
+
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

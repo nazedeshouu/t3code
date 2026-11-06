@@ -299,6 +299,8 @@ function makeLocalCommandHarness(input: {
    * the provider, or an earlier run that delivered it. `nativeForkFrom` plans a native fork of the
    * parent. `switchedProvider` puts the earlier run and its context on another provider thread.
    */
+  /** A rewind's pending summary, whose target run was dropped. */
+  readonly rewindSummary?: boolean;
   readonly sideChat?: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
     readonly nativeForkFrom?: "idle" | "busy";
@@ -651,6 +653,28 @@ function makeLocalCommandHarness(input: {
       ],
     };
   }
+  if (input.rewindSummary === true) {
+    projection = {
+      ...projection,
+      contextHandoffs: [
+        {
+          id: ContextHandoffId.make("rewind-summary"),
+          threadId,
+          targetRunId: RunId.make("dropped-run"),
+          fromProviderThreadIds: [providerThreadId],
+          toProviderThreadId: providerThreadId,
+          coveredRunOrdinals: { from: 2, to: 3 },
+          strategy: "checkpoint_summary",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: "REWIND_SUMMARY",
+          createdByProviderInstanceId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+  }
   if ("historyReadFailureAfterFallback" in input || "resumeFailure" in input) {
     const nativeThreadRef = {
       driver: providerThread.driver,
@@ -802,6 +826,7 @@ function makeLocalCommandHarness(input: {
   const forkThread = vi.fn((_fork: ProviderAdapter.ProviderAdapterV2ForkThreadInput) =>
     Effect.succeed(sideChatThread),
   );
+  const startsNativeTurn = input.sideChat !== undefined || input.rewindSummary === true;
   const sideChatSession = {
     driver: providerThread.driver,
     providerSession,
@@ -811,7 +836,7 @@ function makeLocalCommandHarness(input: {
     startTurn,
   };
   const open = vi.fn(() =>
-    input.sideChat !== undefined
+    startsNativeTurn
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
@@ -845,7 +870,7 @@ function makeLocalCommandHarness(input: {
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
-    input.sideChat !== undefined
+    startsNativeTurn
       ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
@@ -978,7 +1003,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined
+            startsNativeTurn
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -1309,6 +1334,20 @@ effectIt.effect.each([
         },
       ]);
     }),
+);
+
+effectIt.effect("delivers a rewind's summary to the next run though it targets a dropped run", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Carry on.", rewindSummary: true });
+
+    yield* harness.start;
+
+    const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+    expect(text).toContain("REWIND_SUMMARY");
+    expect(text).toContain("This summary replaces them.");
+    expect(text).not.toContain("t3_thread_read");
+    expect(text.endsWith("User message:\nCarry on.")).toBe(true);
+  }),
 );
 
 effectIt.effect.each([

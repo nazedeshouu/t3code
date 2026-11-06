@@ -51,6 +51,7 @@ import {
   type AcpRegistrySetProviderInput,
   OrchestrationGetFullThreadDiffError,
   OrchestrationSearchThreadsError,
+  OrchestrationV2RewindReadError,
   OrchestrationV2SearchThreadError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_V2_WS_METHODS,
@@ -112,6 +113,7 @@ import {
 import { RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as ThreadRewindService from "./orchestration-v2/ThreadRewindService.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
@@ -1485,6 +1487,7 @@ export const layerWsRpc = (
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const agentSessionImporter = yield* AgentSessionImporter.AgentSessionImporter;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+      const threadRewind = yield* ThreadRewindService.ThreadRewindService;
       const nativeChildWork = yield* NativeChildWorkQuery.NativeChildWorkQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const environmentTheme = yield* EnvironmentTheme.EnvironmentThemeService;
@@ -2129,6 +2132,22 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [ORCHESTRATION_V2_WS_METHODS.listRewindTargets]: (input) =>
+          threadRewind
+            .listTargets(input.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestrationV2RewindReadError({ message: cause.detail, cause }),
+              ),
+            ),
+        [ORCHESTRATION_V2_WS_METHODS.previewRewind]: (input) =>
+          threadRewind
+            .preview(input)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestrationV2RewindReadError({ message: cause.detail, cause }),
+              ),
+            ),
         [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: (input) =>
           checkpointDiffQuery.getFullThreadDiff(input).pipe(
             Effect.mapError(

@@ -13,6 +13,8 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  ThreadRewindMode,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -91,6 +93,16 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.rewind"),
+    messageId: MessageId,
+    mode: ThreadRewindMode,
+    summaryInstructions: Schema.optional(TrimmedNonEmptyString),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.rewind.undo"),
+    rewindId: CommandId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("checkpoint.capture"),
     runId: RunId,
     scopeId: CheckpointScopeId,
@@ -126,6 +138,8 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
   "provider-session.detach",
   "provider-thread.rollback",
+  "thread.rewind",
+  "thread.rewind.undo",
   "checkpoint.capture",
   "scheduled-tasks.cleanup",
   "terminal.cleanup",

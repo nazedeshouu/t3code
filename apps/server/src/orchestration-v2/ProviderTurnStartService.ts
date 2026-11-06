@@ -368,6 +368,8 @@ export const layer: Layer.Layer<
       const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
         handoff.status === "ready" &&
         (handoff.targetRunId === run.id ||
+          // A rewind's summary targets a dropped run and waits for whichever run comes next.
+          (handoff.strategy === "checkpoint_summary" && handoff.delivery === undefined) ||
           ((anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
             projection.runs.some(
               (source) =>

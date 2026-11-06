@@ -20,6 +20,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunFinalization from "./RunFinalizationService.ts";
 import * as RuntimeRequests from "./RuntimeRequestService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as ThreadRewindStub from "./testkit/ThreadRewindStub.ts";
 import * as ThreadTitles from "./ThreadTitleRegenerationService.ts";
 
 it.effect.each([
@@ -87,6 +88,7 @@ it.effect.each([
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
         Layer.mock(ProviderTurnControl.ProviderTurnControlServiceV2)({}),
         Layer.mock(CheckpointRollback.CheckpointRollbackServiceV2)({}),
+        ThreadRewindStub.layer,
         Layer.mock(RuntimeRequests.RuntimeRequestServiceV2)({}),
         Layer.mock(ThreadTitles.ThreadTitleRegenerationService)({}),
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
