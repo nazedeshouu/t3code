@@ -46,7 +46,8 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.listRewindTargets]: AuthOrchestrationReadScope,
-  [ORCHESTRATION_V2_WS_METHODS.previewRewind]: AuthOrchestrationReadScope,
+  // A preview can spawn the provider's CLI and writes git objects.
+  [ORCHESTRATION_V2_WS_METHODS.previewRewind]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.searchThreads]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.searchThread]: AuthOrchestrationReadScope,
