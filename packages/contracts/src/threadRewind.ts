@@ -85,3 +85,8 @@ export const ThreadRewindUndo = Schema.Struct({
   createdAt: Schema.DateTimeUtc,
 });
 export type ThreadRewindUndo = typeof ThreadRewindUndo.Type;
+
+export const ThreadRewindUndoJson = ThreadRewindUndo.mapFields((fields) => ({
+  ...fields,
+  createdAt: Schema.DateTimeUtcFromString,
+}));

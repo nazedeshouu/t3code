@@ -1,10 +1,12 @@
 import {
+  ThreadRewindCodeStats,
   ThreadRewindListTargetsInput,
   ThreadRewindListTargetsResult,
   ThreadRewindMode,
   ThreadRewindPreview,
   ThreadRewindPreviewInput,
   ThreadRewindUndo,
+  ThreadRewindUndoJson,
 } from "./threadRewind.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
@@ -369,6 +371,8 @@ export const OrchestrationV2CheckpointCapabilities = Schema.Struct({
   providerCanRollbackConversation: Schema.Boolean,
   providerRollbackReturnsSnapshot: Schema.Boolean,
   providerCanReadConversationSnapshot: Schema.Boolean,
+  /** The provider tracks and restores its own edits, so rewind does not use git checkpoints. */
+  providerCanRewindFiles: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2CheckpointCapabilities =
   typeof OrchestrationV2CheckpointCapabilities.Type;
@@ -522,6 +526,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
       }),
     ),
   ),
+  rewindUndo: Schema.optional(Schema.NullOr(ThreadRewindUndo)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtc),
 });
 export type OrchestrationV2AppThread = typeof OrchestrationV2AppThread.Type;
@@ -1075,6 +1080,8 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   updatedAt: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   itemIdentityVersion: Schema.optional(Schema.Literal(2)),
   forkHeadMessageId: Schema.optional(TrimmedNonEmptyString),
+  /** The one turn a pinned conversation head discards, when that is known to be the whole tail. */
+  conversationHeadDropsPrompt: Schema.optional(TrimmedNonEmptyString),
   claudeAttachmentBudget: Schema.optional(
     Schema.Struct({ bytesUsed: NonNegativeInt, pagesUsed: NonNegativeInt }),
   ),
@@ -1218,6 +1225,10 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   turnTokenUsage: Schema.optional(TurnTokenUsage),
   /** The model the provider reported running this turn's root agent, which can differ from the requested one. */
   model: Schema.optional(TrimmedNonEmptyString),
+  /** The provider's id for this turn's prompt, which names its file checkpoint. */
+  nativePromptRef: Schema.optional(TrimmedNonEmptyString),
+  /** What this turn did to files, recorded when the provider tracks them itself. */
+  codeStats: Schema.optional(ThreadRewindCodeStats),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 
@@ -2340,6 +2351,7 @@ export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((
       }),
     ),
   ),
+  rewindUndo: Schema.optional(Schema.NullOr(ThreadRewindUndoJson)),
   deletedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
 }));
 export type OrchestrationV2AppThreadJson = typeof OrchestrationV2AppThreadJson.Type;
@@ -2752,6 +2764,7 @@ export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFiel
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  rewindUndo: Schema.optional(Schema.NullOr(ThreadRewindUndoJson)),
   activityRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummaryJson),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummaryJson),
@@ -4302,6 +4315,14 @@ export class OrchestrationV2SearchThreadError extends Schema.TaggedError<Orchest
     return "Could not search this thread. Please retry.";
   }
 }
+
+export class OrchestrationV2RewindReadError extends Schema.TaggedError<OrchestrationV2RewindReadError>()(
+  "OrchestrationV2RewindReadError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
 
 export const OrchestrationV2RpcSchemas = {
   listRewindTargets: {

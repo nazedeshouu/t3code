@@ -1,4 +1,5 @@
 import {
+  OrchestrationV2RewindReadError,
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -1781,6 +1782,21 @@ const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.get
   error: Schema.Union([OrchestrationGetTurnDiffError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationV2ListRewindTargetsRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.listRewindTargets,
+  {
+    payload: OrchestrationV2RpcSchemas.listRewindTargets.input,
+    success: OrchestrationV2RpcSchemas.listRewindTargets.output,
+    error: Schema.Union([OrchestrationV2RewindReadError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2PreviewRewindRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.previewRewind, {
+  payload: OrchestrationV2RpcSchemas.previewRewind.input,
+  success: OrchestrationV2RpcSchemas.previewRewind.output,
+  error: Schema.Union([OrchestrationV2RewindReadError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetFullThreadDiffRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,
   {
@@ -2267,6 +2283,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2ForceStopThreadRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,
+  WsOrchestrationV2ListRewindTargetsRpc,
+  WsOrchestrationV2PreviewRewindRpc,
   WsOrchestrationV2GetFullThreadDiffRpc,
   WsOrchestrationV2SearchThreadsRpc,
   WsOrchestrationV2SearchThreadRpc,
