@@ -154,6 +154,7 @@ const TargetRow = memo(function TargetRow(props: {
 function TargetList(props: {
   readonly targets: ReadonlyArray<ThreadRewindTarget> | null;
   readonly error: string | null;
+  readonly unsupported: boolean;
   readonly supportsConversationRollback: boolean;
   readonly selected: MessageId | null;
   readonly onSelect: (messageId: MessageId | null) => void;
@@ -162,8 +163,11 @@ function TargetList(props: {
 }) {
   const { targets, error, selected, onSelect, onChoose, onClose } = props;
   const listRef = useRef<HTMLDivElement>(null);
-  const unavailable =
-    targets === null ? null : rewindUnavailableReason(targets, props.supportsConversationRollback);
+  const unavailable = props.unsupported
+    ? "Update this server to use rewind."
+    : targets === null
+      ? null
+      : rewindUnavailableReason(targets, props.supportsConversationRollback);
   const rows = unavailable === null ? (targets ?? []) : [];
   const rowIds = [...rows.map((target) => target.messageId), null];
   const selectedIndex = rowIds.indexOf(selected);
@@ -223,7 +227,7 @@ function TargetList(props: {
           </>
         }
       />
-      {error !== null ? <Note tone="error">{error}</Note> : null}
+      {error !== null && !props.unsupported ? <Note tone="error">{error}</Note> : null}
       {unavailable !== null ? <Note>{unavailable}</Note> : null}
       {targets === null && error === null ? <TargetListSkeleton /> : null}
       {targets?.length === 0 ? <Note>Nothing to rewind to yet.</Note> : null}
@@ -571,6 +575,7 @@ function RewindSteps(props: {
     <TargetList
       targets={targets}
       error={query.error}
+      unsupported={query.unsupported}
       supportsConversationRollback={props.supportsConversationRollback}
       selected={target?.messageId ?? null}
       onSelect={select}
