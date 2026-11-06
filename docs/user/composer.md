@@ -168,22 +168,32 @@ thread and near usage limits. Codex needs version 0.165 or later; if T3 Code man
 Codex, update it in Settings > Providers. Codex follows a change to the setting at once; open Claude
 threads follow it after they restart. Suggestions show on web and desktop.
 
-## Edit an earlier prompt
+## Rewind
 
-On web and desktop, choose **Edit from here** beneath a sent message to rewind
-the conversation to before that message. Choose **Revert and keep changes** to
-leave workspace files as they are, or **Revert files too** to put the workspace back
-to its checkpoint from before that message. That also undoes edits you made yourself.
-File restore is only offered for threads running in a worktree, and it is
-refused when another thread or agent session also uses that directory, a folder
-inside it, or a folder that contains it, since
-restoring would erase their changes. A thread that works in the project directory
-rewinds the conversation only. The selected prompt and its attachments return to the composer for editing and
-resending. Any unsent draft stays above the restored prompt.
+Rewind takes a thread back to an earlier message. On web and desktop, press `Esc` twice, type
+`/rewind`, run **Rewind** from the command palette, or choose **Rewind to here** beneath a sent
+message. Your draft is kept. The composer becomes a list of the thread's prompts, and the thread
+shows where each one would take you. Pick a prompt, then pick what to restore:
 
-This removes the selected message and later conversation from the active thread
-and provider history. It does not undo external actions or separate provider
-memory. The action is available only when the provider supports rewind.
+- **Restore code and conversation** puts files back and removes that message and everything after it.
+- **Restore conversation** removes the messages and leaves files as they are.
+- **Restore code** puts files back and keeps the conversation.
+- **Summarize from here** replaces that message and everything after it with a summary, so the
+  thread keeps the gist in less context. Press `Tab` or start typing to add guidance.
+
+Options the provider or thread can't support are left out. A running turn is stopped first. After a
+conversation rewind, the prompt and its attachments return to the composer for editing and
+resending, below any draft you already had. To take it back, choose **Undo** on the notice above the
+composer. Undo stays available until you send the next message, including after a reload or from
+another device.
+
+Restoring code has limits. Restored files go back whole, so later changes to them by anyone are
+lost. Files changed only through Bash are not restored, and neither are edits made by subagents.
+Turns from before this feature show **No code restore**. Check the warning when another thread is
+working in the same folder, since restoring can overwrite its changes.
+
+Rewinding does not undo external actions or separate provider memory. Summarizing only works from a
+message onward; there is no way to summarize up to a message.
 
 ## Prompt stash
 
