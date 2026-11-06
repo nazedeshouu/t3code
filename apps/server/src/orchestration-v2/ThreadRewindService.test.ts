@@ -141,7 +141,6 @@ const makeLayer = (
     }),
     Layer.mock(CheckpointStore)({
       captureCheckpoint: () => Effect.void,
-      restoreCheckpoint: () => Effect.succeed(true),
       deleteCheckpointRefs: () => Effect.void,
       diffCheckpoints: () => Effect.succeed("3\t1\tsrc/a.ts\0"),
     }),
@@ -583,6 +582,77 @@ it.effect("rolls back a conversation in a project without git checkpoints", () =
     assert.equal(fake.restore.mock.calls.length, 0);
     assert.equal(fake.rollbackThread.mock.calls[0]?.[0].target.type, "provider_turn");
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
+it.effect("a one-way provider rewinds without undo and drops the stale refs at once", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd, fileSystem } = yield* workspace;
+    yield* seed({ runs: 3, cwd, promptRefs: false });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const config = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    assert.isFalse((yield* service.preview({ threadId, messageId: MESSAGE(2) })).undoable);
+
+    yield* service.rewind(rewindInput("code_and_conversation"));
+
+    assert.deepEqual(yield* runStatuses, ["completed", "rolled_back", "rolled_back"]);
+    assert.equal(fake.restore.mock.calls[0]?.[0].checkpoint.id, CHECKPOINT(1));
+    assert.isTrue(
+      fake.rollbackThread.mock.invocationCallOrder[0]! < fake.restore.mock.invocationCallOrder[0]!,
+    );
+    assert.deepEqual(
+      fake.deleteStaleRefs.mock.calls[0]?.[0].checkpoints.map((checkpoint) => checkpoint.id),
+      [CHECKPOINT(2), CHECKPOINT(3)],
+    );
+    const thread = yield* projections.getThread(threadId);
+    assert.equal(thread.lastRewindId, undoId);
+    assert.isNull(thread.rewindUndo ?? null);
+    const stashRoot = path.join(config.stateDir, "rewind-undo");
+    const remaining = (yield* fileSystem.exists(stashRoot))
+      ? yield* fileSystem.readDirectory(stashRoot, { recursive: true })
+      : [];
+    assert.isFalse(remaining.some((entry) => entry.endsWith("record.json")));
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("a failed one-way rollback leaves the code alone", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd, promptRefs: false });
+    fake.rollbackThread.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapter.ProviderAdapterRollbackThreadError({ driver, providerThreadId }),
+      ),
+    );
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
+    assert.equal(fake.restore.mock.calls.length, 0);
+    assert.deepEqual(yield* runStatuses, ["completed", "completed"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
+});
+
+it.effect("a git restore that fails after the rollback keeps the rollback on record", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 2, cwd, promptRefs: false });
+    fake.restore.mockImplementationOnce(() =>
+      Effect.fail(
+        new CheckpointService.CheckpointRestoreError({
+          scopeId,
+          checkpointId: CHECKPOINT(1),
+          cause: "locked",
+        }),
+      ),
+    );
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const error = yield* Effect.flip(service.rewind(rewindInput("code_and_conversation")));
+    assert.equal(error.detail, "The conversation was rewound, but the code could not be restored.");
+    assert.deepEqual(yield* runStatuses, ["completed", "rolled_back"]);
+  }).pipe(scoped, Effect.provide(makeLayer(fake, { providerEngine: false })));
 });
 
 it.effect("restores code in a local thread through the provider", () => {

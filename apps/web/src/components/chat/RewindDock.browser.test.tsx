@@ -39,6 +39,7 @@ const preview: ThreadRewindPreview = {
   code: { filesChanged: 1, insertions: 12, deletions: 4, primaryPath: "src/auth.ts" as never },
   codeUnavailableReason: null,
   removedMessageCount: 3,
+  undoable: true,
   sharedWorkspaceActive: true,
 };
 
@@ -122,6 +123,7 @@ it("walks from the list to a restore and back out with Escape", async () => {
   await expect
     .element(screen.getByText("Another thread is working in this folder."))
     .toBeInTheDocument();
+  await expect.element(screen.getByText("This can't be undone.")).not.toBeInTheDocument();
 
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("option", { name: "Current" })).toBeInTheDocument();
@@ -177,10 +179,12 @@ it("renumbers around the server's modes and returns to the list on Never mind", 
     modes: ["conversation"],
     code: null,
     codeUnavailableReason: "No file snapshot exists for this turn." as never,
+    undoable: false,
     sharedWorkspaceActive: false,
   });
   await using screen = await render(<Dock onRewind={onRewind} />);
   await userEvent.keyboard("{ArrowUp}{Enter}");
+  await expect.element(screen.getByText("This can't be undone.")).toBeInTheDocument();
   await expect
     .element(screen.getByText("No file snapshot exists for this turn."))
     .toBeInTheDocument();
