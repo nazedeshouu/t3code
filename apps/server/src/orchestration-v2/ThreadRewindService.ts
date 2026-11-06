@@ -110,6 +110,8 @@ const RewindUndoRecord = Schema.Struct({
   nodes: Schema.Array(OrchestrationV2ExecutionNodeJson),
   checkpoints: Schema.Array(OrchestrationV2CheckpointJson),
   summary: Schema.NullOr(Schema.Struct({ text: Schema.String, handoffId: ContextHandoffId })),
+  /** An earlier rewind's undelivered summary this one replaced. Undo puts it back. */
+  supersededSummaryId: Schema.NullOr(ContextHandoffId),
 });
 type RewindUndoRecord = typeof RewindUndoRecord.Type;
 const decodeRecord = Schema.decodeEffect(Schema.fromJsonString(RewindUndoRecord));
@@ -456,6 +458,31 @@ export const layer = Layer.effect(
       );
     });
 
+    const handoffStatusEvents = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      handoffId: ContextHandoffId,
+      status: "ready" | "superseded",
+      now: DateTime.Utc,
+    ) {
+      const { contextHandoffs } = yield* projections.getThreadRecords(threadId, [
+        "contextHandoffs",
+      ]);
+      const handoff = contextHandoffs.find((candidate) => candidate.id === handoffId);
+      if (handoff === undefined) return [];
+      const event: OrchestrationV2DomainEvent = {
+        id: yield* ids.allocate.event({ threadId }),
+        type: "context-handoff.updated",
+        threadId,
+        runId: handoff.targetRunId,
+        ...(handoff.createdByProviderInstanceId === null
+          ? {}
+          : { providerInstanceId: handoff.createdByProviderInstanceId }),
+        occurredAt: now,
+        payload: { ...handoff, status, updatedAt: now },
+      };
+      return [event];
+    });
+
     const canSummarize = Effect.fnUntraced(function* (context: ProjectionThreadRewindContext) {
       const selection = resolveProjectSettings(
         yield* serverSettings.getSettings,
@@ -537,6 +564,15 @@ export const layer = Layer.effect(
               }),
             }
           : null;
+      const { contextHandoffs } = yield* projections.getThreadRecords(input.threadId, [
+        "contextHandoffs",
+      ]);
+      const undeliveredSummary = contextHandoffs.find(
+        (handoff) =>
+          handoff.strategy === "checkpoint_summary" &&
+          handoff.status === "ready" &&
+          handoff.delivery === undefined,
+      );
       let filesChanged: ReadonlyArray<string> = [];
       let filesRestored = 0;
       let gitUndoRef: CheckpointRef | null = null;
@@ -560,6 +596,7 @@ export const layer = Layer.effect(
         nodes: rollsBack ? context.rootNodes : [],
         checkpoints: rollsBack ? context.staleCheckpoints : [],
         summary,
+        supersededSummaryId: rollsBack ? (undeliveredSummary?.id ?? null) : null,
       });
     });
 
@@ -642,6 +679,16 @@ export const layer = Layer.effect(
             ];
             if (snapshot !== undefined) {
               events.push(...(yield* rollback.rollbackEvents({ ...loaded.rollback, snapshot })));
+            }
+            if (snapshot !== undefined && record.supersededSummaryId !== null) {
+              events.push(
+                ...(yield* handoffStatusEvents(
+                  threadId,
+                  record.supersededSummaryId,
+                  "superseded",
+                  now,
+                )),
+              );
             }
             if (snapshot !== undefined && record.summary !== null) {
               const ordinals = context.runsToRollback.map((run) => run.ordinal);
@@ -783,22 +830,19 @@ export const layer = Layer.effect(
             }
           }
           if (record.summary !== null) {
-            const summaryHandoffId = record.summary.handoffId;
-            const { contextHandoffs } = yield* projections.getThreadRecords(threadId, [
-              "contextHandoffs",
-            ]);
-            const handoff = contextHandoffs.find((candidate) => candidate.id === summaryHandoffId);
-            if (handoff !== undefined) {
-              events.push({
-                id: yield* ids.allocate.event({ threadId }),
-                type: "context-handoff.updated",
+            events.push(
+              ...(yield* handoffStatusEvents(
                 threadId,
-                runId: handoff.targetRunId,
-                providerInstanceId: providerInstanceId ?? thread.providerInstanceId,
-                occurredAt: now,
-                payload: { ...handoff, status: "superseded", updatedAt: now },
-              });
-            }
+                record.summary.handoffId,
+                "superseded",
+                now,
+              )),
+            );
+          }
+          if (record.supersededSummaryId !== null) {
+            events.push(
+              ...(yield* handoffStatusEvents(threadId, record.supersededSummaryId, "ready", now)),
+            );
           }
           yield* eventSink.write({ events });
         }),

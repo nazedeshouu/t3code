@@ -735,6 +735,33 @@ it.effect("undo resends the restored items, which a client that loaded later nev
   }).pipe(scoped, Effect.provide(makeLayer(fake)));
 });
 
+it.effect("a later conversation rewind replaces an undelivered summary until it is undone", () => {
+  const fake = makeFake({});
+  return Effect.gen(function* () {
+    const { cwd } = yield* workspace;
+    yield* seed({ runs: 3, cwd });
+    const service = yield* ThreadRewindService.ThreadRewindService;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const handoffStatus = projections
+      .getThreadRecords(threadId, ["contextHandoffs"])
+      .pipe(Effect.map(({ contextHandoffs }) => contextHandoffs[0]?.status));
+    const codeRewind = CommandId.make("rewind:code");
+    const conversationRewind = CommandId.make("rewind:conversation");
+
+    yield* service.rewind(rewindInput("summarize_from_here", 3));
+    assert.equal(yield* handoffStatus, "ready");
+
+    yield* service.rewind({ ...rewindInput("code", 2), rewindId: codeRewind });
+    assert.equal(yield* handoffStatus, "ready");
+
+    yield* service.rewind({ ...rewindInput("conversation", 2), rewindId: conversationRewind });
+    assert.equal(yield* handoffStatus, "superseded");
+
+    yield* service.undo({ threadId, rewindId: conversationRewind });
+    assert.equal(yield* handoffStatus, "ready");
+  }).pipe(scoped, Effect.provide(makeLayer(fake)));
+});
+
 it.effect("expiring the undo drops the stash and the stale refs it kept", () => {
   const fake = makeFake({});
   return Effect.gen(function* () {
