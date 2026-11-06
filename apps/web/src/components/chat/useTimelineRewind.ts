@@ -204,28 +204,31 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     const threadId = activeThread.id;
     const commandId = CommandId.make(randomUUID());
     undoingRef.current = true;
-    try {
-      await waitForThreadRewind(
-        routeThreadRef,
-        commandId,
-        (thread) => thread.rewindUndo?.rewindId !== undo.rewindId,
-        async () => {
-          const result = await undoThreadRewind({
-            environmentId,
-            input: { commandId, threadId, rewindId: undo.rewindId },
-          });
-          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        },
-      );
+    setThreadError(threadId, null);
+    const failure = await waitForThreadRewind(
+      routeThreadRef,
+      commandId,
+      (thread) => thread.rewindUndo?.rewindId !== undo.rewindId,
+      async () => {
+        const result = await undoThreadRewind({
+          environmentId,
+          input: { commandId, threadId, rewindId: undo.rewindId },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    undoingRef.current = false;
+    if (failure === null) {
       clearRewindPrefill(undo.messageId);
-    } catch (error) {
-      setThreadError(
-        threadId,
-        error instanceof Error ? error.message : "The rewind could not be undone.",
-      );
-    } finally {
-      undoingRef.current = false;
+      return;
     }
+    setThreadError(
+      threadId,
+      failure instanceof Error ? failure.message : "The rewind could not be undone.",
+    );
   };
   const onUndoRewindStable = useStableCallback(onUndoRewind);
 
