@@ -17,7 +17,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
-import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
+import { hasActiveRunInDirectory, isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -179,6 +179,54 @@ it.effect.each([
       assert.deepEqual(calls, restoreFiles ? ["provider", "files"] : ["provider"]);
       assert.equal(yield* fs.exists(otherFile), !restoreFiles);
     }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  { name: "a busy thread here", worktreePath: "here", activeRunId: "run:busy", expected: true },
+  {
+    name: "a busy thread below",
+    worktreePath: "here/sub",
+    activeRunId: "run:busy",
+    expected: true,
+  },
+  { name: "an idle thread here", worktreePath: "here", activeRunId: null, expected: false },
+  {
+    name: "a busy thread elsewhere",
+    worktreePath: "there",
+    activeRunId: "run:busy",
+    expected: false,
+  },
+])("reports $name as shared activity", ({ worktreePath, activeRunId, expected }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-shared-activity-" });
+    yield* fs.makeDirectory(path.join(root, "here", "sub"), { recursive: true });
+    yield* fs.makeDirectory(path.join(root, "there"), { recursive: true });
+    const shared = yield* hasActiveRunInDirectory(
+      { id: ThreadId.make("thread:current") },
+      path.join(root, "here"),
+      {
+        fileSystem: fs,
+        path,
+        projects: { get: () => Effect.die("unused") } as never,
+        projections: {
+          getShellSnapshot: () =>
+            Effect.succeed({
+              threads: [
+                {
+                  id: "thread:current",
+                  activeRunId: "run:mine",
+                  worktreePath: path.join(root, "here"),
+                },
+                { id: "thread:other", activeRunId, worktreePath: path.join(root, worktreePath) },
+              ],
+            }),
+        } as never,
+      },
+    );
+    assert.equal(shared, expected);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

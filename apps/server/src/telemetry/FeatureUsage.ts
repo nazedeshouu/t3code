@@ -28,6 +28,8 @@ const COMMAND_FEATURES: {
     feature: "checkpoint.rollback",
     variant: command.restoreFiles === false ? "conversation_only" : "with_files",
   }),
+  "thread.rewind": (command) => ({ feature: "thread.rewind", variant: command.mode }),
+  "thread.rewind.undo": () => ({ feature: "thread.rewind.undo" }),
   "thread.fork": () => ({ feature: "thread.fork" }),
   "thread.merge_back": () => ({ feature: "thread.merge_back" }),
   "provider.switch": () => ({ feature: "provider.switch" }),

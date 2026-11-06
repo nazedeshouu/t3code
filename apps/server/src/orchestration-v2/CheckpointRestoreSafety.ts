@@ -9,6 +9,45 @@ import type * as ProjectStore from "./ProjectStore.ts";
 export const SHARED_WORKSPACE_RESTORE_MESSAGE =
   "File restore requires an isolated worktree. This workspace may contain changes from another thread or a side chat. Rewind the conversation without restoring files instead, or delete side chats you no longer need.";
 
+const contains = (path: Path.Path, parent: string, child: string) => {
+  const relative = path.relative(parent, child);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+};
+
+/** Whether another thread is working in or around `directory` right now. */
+export const hasActiveRunInDirectory = Effect.fn("orchestrationV2.hasActiveRunInDirectory")(
+  function* (
+    thread: Pick<OrchestrationV2AppThread, "id">,
+    directory: string,
+    dependencies: {
+      readonly fileSystem: FileSystem.FileSystem;
+      readonly projections: ProjectionStoreV2["Service"];
+      readonly projects: ProjectStore.ProjectStoreV2["Service"];
+      readonly path: Path.Path;
+    },
+  ) {
+    const { fileSystem, projections, projects, path } = dependencies;
+    const resolve = (target: string) =>
+      fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+    const cwd = yield* resolve(directory);
+    const shell = yield* projections.getShellSnapshot();
+    for (const other of shell.threads) {
+      if (other.id === thread.id || other.activeRunId === null) continue;
+      const project =
+        other.worktreePath === null ? yield* projects.get(other.projectId) : Option.none();
+      const otherDirectory =
+        other.worktreePath ?? (Option.isSome(project) ? project.value.workspaceRoot : null);
+      if (otherDirectory === null) continue;
+      const otherCwd = yield* resolve(otherDirectory);
+      if (contains(path, cwd, otherCwd) || contains(path, otherCwd, cwd)) return true;
+    }
+    return false;
+  },
+);
+
 // Check isolation at admission and rollback; checkpoints restore whole checkouts, which may become shared.
 export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(
   function* (
@@ -22,13 +61,6 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
     },
   ) {
     const { fileSystem, projections, projects, path } = dependencies;
-    const contains = (parent: string, child: string) => {
-      const relative = path.relative(parent, child);
-      return (
-        relative === "" ||
-        (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
-      );
-    };
     const worktreePath = thread.worktreePath;
     let shared = worktreePath == null;
     if (!shared && worktreePath !== null) {
@@ -92,7 +124,10 @@ export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpoi
                 (_error) => Effect.succeed(null),
               ),
             );
-            if (otherCwd !== null && (contains(cwd, otherCwd) || contains(otherCwd, cwd))) {
+            if (
+              otherCwd !== null &&
+              (contains(path, cwd, otherCwd) || contains(path, otherCwd, cwd))
+            ) {
               shared = true;
               break;
             }

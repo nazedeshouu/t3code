@@ -22,6 +22,7 @@ import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import * as ThreadRewindService from "./ThreadRewindService.ts";
 import * as CommandPolicy from "./CommandPolicy.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -204,6 +205,21 @@ const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.p
     ),
   ),
 );
+const layerThreadRewindServiceProvided = ThreadRewindService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ProviderAdapterRegistry.layerFromProviderInstanceRegistry,
+      layerCheckpointRollbackServiceProvided,
+      layerCheckpointServiceProvided,
+      layerEventSink,
+      IdAllocator.layer,
+      ProjectionStore.layer,
+      ProjectStore.layer,
+      ThreadCommandExecutor.layer,
+      TextGeneration.layer,
+    ),
+  ),
+);
 const layerCheckpointCaptureServiceProvided = CheckpointCaptureService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -337,6 +353,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
     Layer.mergeAll(
       layerRunFinalizationServiceProvided,
       layerCheckpointRollbackServiceProvided,
+      layerThreadRewindServiceProvided,
       layerProviderSessionManagerProvided,
       layerProviderTurnControlServiceProvided,
       layerProviderTurnStartServiceProvided,
@@ -379,6 +396,7 @@ export const layer = Layer.mergeAll(
   layerMcpAppRequestsProvided,
   layerThreadManagementProvided,
   layerEffectWorkerProvided,
+  layerThreadRewindServiceProvided,
   layerProviderSessionManagerProvided,
   layerProviderAuthServiceProvided,
   layerProviderRuntimeRecoveryProvided,

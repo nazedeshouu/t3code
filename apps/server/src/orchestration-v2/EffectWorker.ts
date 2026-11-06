@@ -1,4 +1,4 @@
-import { CommandId, type RunId } from "@t3tools/contracts";
+import { CommandId, type RunId, type ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -24,6 +24,7 @@ import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
+import * as ThreadRewindService from "./ThreadRewindService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
@@ -95,6 +96,7 @@ export const layerExecutor: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunFinalizationService.RunFinalizationService
   | CheckpointRollbackService.CheckpointRollbackServiceV2
+  | ThreadRewindService.ThreadRewindService
   | ProviderTurnControlService.ProviderTurnControlServiceV2
   | ProviderTurnStartService.ProviderTurnStartServiceV2
   | RuntimeRequestService.RuntimeRequestServiceV2
@@ -154,6 +156,37 @@ export const layerExecutor: Layer.Layer<
             ),
         ),
       );
+    const threadRewind = yield* ThreadRewindService.ThreadRewindService;
+    // A lost undo window must never cost the user the turn that ended it.
+    const expireRewindUndo = (threadId: ThreadId) =>
+      threadRewind
+        .expireUndo(threadId)
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Failed to expire a rewind undo", { threadId, cause }),
+          ),
+        );
+    const recordRollbackFailure = (
+      effect: { readonly id: string; readonly commandId: CommandId; readonly threadId: ThreadId },
+      message: string,
+    ) =>
+      threads
+        .dispatch({
+          type: "checkpoint.rollback.fail",
+          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+          threadId: effect.threadId,
+          requestId: effect.commandId,
+          message,
+        })
+        .pipe(
+          Effect.asVoid,
+          Effect.catchCause((recordCause) =>
+            Effect.logWarning("Failed to record rollback failure", {
+              effectId: effect.id,
+              cause: recordCause,
+            }),
+          ),
+        );
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
@@ -236,7 +269,37 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           case "provider-turn.start":
-            return startRun(effect, effect.request.runId, willRetry).pipe(
+            return expireRewindUndo(effect.threadId).pipe(
+              Effect.andThen(startRun(effect, effect.request.runId, willRetry)),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          case "thread.rewind":
+          case "thread.rewind.undo":
+            return (
+              effect.request.type === "thread.rewind"
+                ? threadRewind.rewind({
+                    threadId: effect.threadId,
+                    rewindId: effect.commandId,
+                    messageId: effect.request.messageId,
+                    mode: effect.request.mode,
+                    ...(effect.request.summaryInstructions === undefined
+                      ? {}
+                      : { summaryInstructions: effect.request.summaryInstructions }),
+                  })
+                : threadRewind.undo({
+                    threadId: effect.threadId,
+                    rewindId: effect.request.rewindId,
+                  })
+            ).pipe(
+              // Refusals are deterministic, so they end the effect instead of retrying it.
+              Effect.catch((error) => recordRollbackFailure(effect, error.detail)),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
@@ -543,49 +606,38 @@ export const layerExecutor: Layer.Layer<
               );
           }
           case "provider-thread.rollback":
-            return checkpointRollback
-              .execute({
-                threadId: effect.threadId,
-                providerThreadId: effect.request.providerThreadId,
-                checkpointId: effect.request.checkpointId,
-                scopeId: effect.request.scopeId,
-                ...(effect.request.restoreFiles === undefined
-                  ? {}
-                  : { restoreFiles: effect.request.restoreFiles }),
-              })
-              .pipe(
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "checkpoint.rollback.fail",
-                          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                          threadId: effect.threadId,
-                          requestId: effect.commandId,
-                          message: Option.match(Cause.findErrorOption(cause), {
-                            onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                            onSome: CheckpointRollbackService.rollbackFailureClientMessage,
-                          }),
-                        })
-                        .pipe(
-                          Effect.catchCause((recordCause) =>
-                            Effect.logWarning("Failed to record rollback failure", {
-                              effectId: effect.id,
-                              cause: recordCause,
-                            }),
-                          ),
-                        ),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
+            return expireRewindUndo(effect.threadId).pipe(
+              Effect.andThen(
+                checkpointRollback.execute({
+                  threadId: effect.threadId,
+                  providerThreadId: effect.request.providerThreadId,
+                  checkpointId: effect.request.checkpointId,
+                  scopeId: effect.request.scopeId,
+                  ...(effect.request.restoreFiles === undefined
+                    ? {}
+                    : { restoreFiles: effect.request.restoreFiles }),
+                }),
+              ),
+              Effect.tapCause((cause) =>
+                willRetry || Cause.hasInterruptsOnly(cause)
+                  ? Effect.void
+                  : recordRollbackFailure(
+                      effect,
+                      Option.match(Cause.findErrorOption(cause), {
+                        onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                        onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                      }),
+                    ),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "checkpoint.capture":
             return runFinalization
               .finalize({
@@ -610,7 +662,8 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           case "scheduled-tasks.cleanup":
-            return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
+            return expireRewindUndo(effect.threadId).pipe(
+              Effect.andThen(resourceCleanup.cleanupScheduledTasks(effect.threadId)),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
