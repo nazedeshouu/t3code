@@ -1,7 +1,9 @@
 import { AuthFilesystemReadScope, type ScopedThreadRef } from "@t3tools/contracts";
 import { use } from "react";
 
+import { useClientSettings } from "../../hooks/useSettings";
 import { resolveToolFileLinkMeta, type MarkdownFileLinkMeta } from "../../markdown-links";
+import { nazeLabEnabled } from "../../nazeLabs";
 import { useEnvironmentScope } from "../../state/session";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { MarkdownFileLink } from "./MarkdownFileLink";
@@ -24,7 +26,10 @@ export function WorkLogFileLink({
     threadRef?.environmentId ?? null,
     AuthFilesystemReadScope,
   );
-  const meta = canReadFiles ? resolveToolFileLinkMeta(path, markdownCwd) : null;
+  const linksEnabled = useClientSettings((settings) =>
+    nazeLabEnabled(settings, "naze-tool-file-links"),
+  );
+  const meta = canReadFiles && linksEnabled ? resolveToolFileLinkMeta(path, markdownCwd) : null;
   if (threadRef && meta && !turnItemSource) {
     return <OpenableFileLink threadRef={threadRef} meta={meta} label={label} layout={layout} />;
   }

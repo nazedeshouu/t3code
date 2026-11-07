@@ -28,6 +28,7 @@ import {
   reconcileOptimisticUserMessages,
 } from "./chat/optimisticUserMessages";
 import { useTimelineRewind } from "./chat/useTimelineRewind";
+import { nazeLabEnabled } from "../nazeLabs";
 import { RewindDock } from "./chat/RewindDock";
 import { rewindUndoBannerItem } from "./chat/ComposerRewindUndo";
 import { useRewindEscape } from "./chat/useRewindEscape";
@@ -839,6 +840,8 @@ export default function ChatView(props: ChatViewProps) {
   const isServerThread = serverThread !== null;
   const rewindAvailable = !embedded && isServerThread && canOperateThread;
   const rewindDockRequest = useRewindDockRequest(rewindAvailable ? routeThreadKey : null);
+  const rewindLabEnabled = useClientSettings((settings) => nazeLabEnabled(settings, "naze-rewind"));
+  const rewindCommandsAvailable = rewindAvailable && rewindLabEnabled;
   const onRewindToMessageStable = useStableCallback((messageId: MessageId) =>
     openRewindDock(routeThreadKey, messageId),
   );
@@ -2801,7 +2804,7 @@ export default function ChatView(props: ChatViewProps) {
         if (!event.repeat) void onInterruptStable();
       },
       "thread.rewind": ({ event }) => {
-        if (!rewindAvailable) return false;
+        if (!rewindCommandsAvailable) return false;
         if (!event.repeat) openRewindDock(routeThreadKey);
       },
     },
@@ -2814,7 +2817,7 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   useRewindEscape({
-    enabled: rewindAvailable && rewindDockRequest === null && !backgroundThread,
+    enabled: rewindCommandsAvailable && rewindDockRequest === null && !backgroundThread,
     threadFindActive: isThreadFindActive,
     onOpen: () => openRewindDock(routeThreadKey),
   });
@@ -3017,7 +3020,7 @@ export default function ChatView(props: ChatViewProps) {
     setKeepFullHistory,
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
-    onRewindCommand: rewindAvailable ? onRewindCommandStable : undefined,
+    onRewindCommand: rewindCommandsAvailable ? onRewindCommandStable : undefined,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -3733,7 +3736,7 @@ export default function ChatView(props: ChatViewProps) {
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
                                 }
-                                {...(rewindAvailable
+                                {...(rewindCommandsAvailable
                                   ? { onRewindCommand: onRewindCommandStable }
                                   : {})}
                                 onUsageLimitsCommand={

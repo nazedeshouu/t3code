@@ -12,6 +12,7 @@ import { DEFAULT_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import * as Schema from "effect/Schema";
 import { msg } from "gt-react";
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
+import { NAZE_LABS } from "../../nazeLabs";
 import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
@@ -920,6 +921,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/maintenance",
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
+  ...NAZE_LABS.map(({ id, title, searchTerms }) => ({
+    id,
+    title,
+    to: "/settings/labs" as const,
+    searchTerms: [`naze labs ${searchTerms}`],
+  })),
   {
     id: "open-source-licenses",
     title: "Open source licenses",

@@ -112,6 +112,7 @@ import {
   promptLinkRepositoryOf,
 } from "./promptLinks/copyPromptLink";
 import { useClientSettings } from "../hooks/useSettings";
+import { nazeLabEnabled } from "../nazeLabs";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
@@ -456,6 +457,7 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const rewindLabEnabled = useClientSettings((settings) => nazeLabEnabled(settings, "naze-rewind"));
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1397,6 +1399,7 @@ function OpenCommandPaletteDialog(props: {
   }
 
   if (
+    rewindLabEnabled &&
     activeThreadKey !== null &&
     activeThread !== null &&
     readEnvironmentScope(activeThread.environmentId, AuthOrchestrationOperateScope)
