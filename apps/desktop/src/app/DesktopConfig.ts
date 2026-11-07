@@ -57,7 +57,8 @@ export const DesktopConfig = Config.all({
   ),
   desktopLauncherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
   appImagePath: trimmedString("APPIMAGE"),
-  disableAutoUpdate: optionalBoolean("T3CODE_DISABLE_AUTO_UPDATE"),
+  // Personal fork: the upstream feed would replace this build. scripts/naze-update.sh takes nightlies.
+  disableAutoUpdate: Config.Boolean("T3CODE_DISABLE_AUTO_UPDATE").pipe(Config.withDefault(true)),
   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   mockUpdateServerPort: Config.Port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
     Config.withDefault(3000),
@@ -65,4 +66,6 @@ export const DesktopConfig = Config.all({
 });
 
 export const layerTest = (env: Readonly<Record<string, string | undefined>>) =>
-  ConfigProvider.layer(ConfigProvider.fromEnv({ env: compactEnv(env) }));
+  ConfigProvider.layer(
+    ConfigProvider.fromEnv({ env: compactEnv({ T3CODE_DISABLE_AUTO_UPDATE: "false", ...env }) }),
+  );
