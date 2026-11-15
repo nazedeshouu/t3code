@@ -245,39 +245,35 @@ export const layer: Layer.Layer<
         // The caller refuses a restore that isn't isolated.
         if (!(yield* replaceLeftover.isolated)) return;
         // Set aside, not removed: a checkout that fails puts the folder and its files back.
-          yield* Effect.acquireUseRelease(
-            Effect.gen(function* () {
-              const aside = yield* fileSystem.makeTempDirectory({
-                directory: path.dirname(worktreePath),
-                prefix: ".t3-replaced-",
-              });
-              yield* fileSystem.rename(worktreePath, path.join(aside, "folder"));
-              return aside;
-            }),
-            () => recreate,
-            (aside, exit) =>
-              (Exit.isSuccess(exit)
-                ? Effect.void
-                : fileSystem
-                    .remove(worktreePath, { recursive: true, force: true })
-                    .pipe(
-                      Effect.andThen(
-                        fileSystem.rename(path.join(aside, "folder"), worktreePath),
-                      ),
-                    )
-              ).pipe(
-                Effect.andThen(fileSystem.remove(aside, { recursive: true, force: true })),
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("A rewind left a worktree folder set aside", {
-                    worktreePath,
-                    setAside: path.join(aside, "folder"),
-                    cause,
-                  }),
-                ),
+        yield* Effect.acquireUseRelease(
+          Effect.gen(function* () {
+            const aside = yield* fileSystem.makeTempDirectory({
+              directory: path.dirname(worktreePath),
+              prefix: ".t3-replaced-",
+            });
+            yield* fileSystem.rename(worktreePath, path.join(aside, "folder"));
+            return aside;
+          }),
+          () => recreate,
+          (aside, exit) =>
+            (Exit.isSuccess(exit)
+              ? Effect.void
+              : fileSystem
+                  .remove(worktreePath, { recursive: true, force: true })
+                  .pipe(Effect.andThen(fileSystem.rename(path.join(aside, "folder"), worktreePath)))
+            ).pipe(
+              Effect.andThen(fileSystem.remove(aside, { recursive: true, force: true })),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("A rewind left a worktree folder set aside", {
+                  worktreePath,
+                  setAside: path.join(aside, "folder"),
+                  cause,
+                }),
               ),
-          );
+            ),
+        );
       },
-      (effect, thread) =>
+      (effect, thread, _replaceLeftover?: { readonly isolated: Effect.Effect<boolean, unknown> }) =>
         effect.pipe(
           Effect.mapError((cause) => new WorktreeRecreateError({ threadId: thread.id, cause })),
         ),

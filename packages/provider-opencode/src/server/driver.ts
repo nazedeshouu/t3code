@@ -222,7 +222,7 @@ function selectOpenCodeRuntimeTextGeneration(
         v2: v2.generateThreadTitle(input),
       }),
     generateThreadSummary: (input) =>
-      byOpenCodeRuntime(probe.get, {
+      byOpenCodeRuntime(resolve, {
         v1: v1.generateThreadSummary(input),
         v2: v2.generateThreadSummary(input),
       }),

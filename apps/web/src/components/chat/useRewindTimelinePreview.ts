@@ -66,7 +66,7 @@ export function useRewindTimelinePreview(input: {
       }
       revealedRef.current = target;
       const list = listRef.current;
-      const scrollNode: HTMLElement | undefined = list?.getScrollableNode();
+      const scrollNode: HTMLElement | null | undefined = list?.getScrollableNode();
       if (!list || !scrollNode) return;
       const rowElement: HTMLElement | undefined = list.getState().elementAtIndex(index);
       const view = scrollNode.getBoundingClientRect();

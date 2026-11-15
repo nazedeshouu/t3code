@@ -196,8 +196,11 @@ export const make = Effect.gen(function* () {
       );
     }),
     generateThreadSummary: Effect.fn("TextGeneration.generateThreadSummary")(function (input) {
-      return generate("generateThreadSummary", input.modelSelection, (service, modelSelection) =>
-        service.generateThreadSummary({ ...input, modelSelection }),
+      return generate(
+        "generateThreadSummary",
+        input.modelSelection,
+        input.projectId,
+        (service, modelSelection) => service.generateThreadSummary({ ...input, modelSelection }),
       );
     }),
     generateTranscriptionPostProcessing: Effect.fn(

@@ -820,6 +820,7 @@ it.effect(
           generateCommitMessage: () => Effect.die("unused"),
           generatePrContent: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
+          generateThreadSummary: () => Effect.die("unused"),
           generateThreadTitle: () => Effect.die("unused"),
           generateTranscriptionPostProcessing: () => Effect.die("unused"),
           generateReviewGuide: (input) =>

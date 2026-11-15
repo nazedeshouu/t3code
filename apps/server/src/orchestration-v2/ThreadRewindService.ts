@@ -669,6 +669,7 @@ export const layer = Layer.effect(
           history: renderHistory(selected.messages, selected.context),
           instructions,
           modelSelection: settings.textGenerationModelSelection,
+          projectId: context.thread.projectId,
         })
         .pipe(
           Effect.mapError((cause) =>

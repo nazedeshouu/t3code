@@ -75,7 +75,8 @@ import {
 import * as Schema from "effect/Schema";
 import { threadHasStarted } from "../lib/chatThreadActions";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { environmentThreadDetails } from "../state/threads";
+import { environmentThreadDetails, environmentThreadShells } from "../state/threads";
+import { waitForAtomValue } from "../state/waitForAtomValue";
 import {
   filterTerminalContextsWithText,
   formatTerminalContextLabel,

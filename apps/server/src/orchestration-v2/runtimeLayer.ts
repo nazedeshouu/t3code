@@ -205,6 +205,9 @@ const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.p
     ),
   ),
 );
+const layerTextGenerationProvided = TextGeneration.layer.pipe(
+  Layer.provide(ProviderInstallationGate.layer),
+);
 const layerThreadRewindServiceProvided = ThreadRewindService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -216,7 +219,7 @@ const layerThreadRewindServiceProvided = ThreadRewindService.layer.pipe(
       ProjectionStore.layer,
       ProjectStore.layer,
       ThreadCommandExecutor.layer,
-      TextGeneration.layer,
+      layerTextGenerationProvided,
     ),
   ),
 );
@@ -341,11 +344,7 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
 );
 const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.layer.pipe(
   Layer.provide(
-    Layer.mergeAll(
-      layerThreadManagementProvided,
-      ProjectStore.layer,
-      TextGeneration.layer.pipe(Layer.provide(ProviderInstallationGate.layer)),
-    ),
+    Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, layerTextGenerationProvided),
   ),
 );
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(

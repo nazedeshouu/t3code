@@ -1392,9 +1392,9 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "preview.find",
       run: async () => {
         dispatchPreviewAction("find");
-        },
-      });
-    }
+      },
+    });
+  }
 
   if (
     activeThreadKey !== null &&

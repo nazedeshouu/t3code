@@ -121,7 +121,6 @@ describe("deriveMessagesTimelineRows", () => {
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaries: [],
-      supportsConversationRollback: false,
     });
     const reply = rows.find((row) => row.kind === "message" && row.id === "reply");
     expect(reply).toMatchObject({ suppressEmptyResponse: expected });
@@ -846,7 +845,6 @@ describe("deriveMessagesTimelineRows", () => {
           completedAt: fixture.time(8),
         },
         turnDiffSummaries: [],
-        supportsConversationRollback: false,
         ...(expandedRunIds ? { expandedRunIds } : {}),
       });
     const collapsed = rowsFor();
@@ -2370,7 +2368,6 @@ describe("deriveMessagesTimelineRows", () => {
         activeTurnStartedAt: settled ? null : DateTime.formatIso(at(0)),
         ...(expandedRunIds === undefined ? {} : { expandedRunIds }),
         turnDiffSummaries: [],
-        supportsConversationRollback: false,
       });
       return rows.flatMap((row, index) =>
         row.kind === "viewed-images" ? [{ after: rows[index - 1]?.kind, paths: row.paths }] : [],
@@ -3908,7 +3905,7 @@ describe("streaming v2 row projection", () => {
         isWorking: true,
         activeTurnStartedAt: source.time(5),
         turnDiffSummaries: [],
-        supportsConversationRollback: true,
+        rewindEnabled: true,
       });
       let timelineInput = {
         visibleTurnItems: withStreamedText(
@@ -3967,7 +3964,7 @@ describe("streaming v2 row projection", () => {
         isWorking: true,
         activeTurnStartedAt: source.time(5),
         turnDiffSummaries: [],
-        supportsConversationRollback: true,
+        rewindEnabled: true,
       });
       let visibleTurnItems = source.visibleTurnItems;
       let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
@@ -4036,7 +4033,7 @@ describe("streaming v2 row projection", () => {
       isWorking: running,
       activeTurnStartedAt: source.time(5),
       turnDiffSummaries: [],
-      supportsConversationRollback: true,
+      rewindEnabled: true,
       ...(expandedWorkGroupIds ? { expandedWorkGroupIds } : {}),
       ...(running ? {} : { expandedRunIds: new Set([source.runId]) }),
       ...(hiddenTool ? { toolCallVisibility: "hideAll" as const } : {}),
@@ -4115,7 +4112,7 @@ describe("linked timeline resources", () => {
     createdAt: "2026-09-08T10:00:02Z",
     projectedItem: { item: { id, type, runId: eventRunId } } as OrchestrationV2ProjectedTurnItem,
   });
-  const common = { isWorking: false, turnDiffSummaries: [], supportsConversationRollback: false };
+  const common = { isWorking: false, turnDiffSummaries: [] };
 
   it("groups adjacent subagents without merging across a resource or run boundary", () => {
     const rows = deriveMessagesTimelineRows({
@@ -4954,7 +4951,6 @@ describe("parent run waiting on foreground subagents", () => {
       isWorking: true,
       activeTurnStartedAt: DateTime.formatIso(at(0)),
       turnDiffSummaries: [],
-      supportsConversationRollback: false,
       ...(toolCallVisibility ? { toolCallVisibility } : {}),
     }).find((row) => row.id === "live-activity-row");
   const thinking = {

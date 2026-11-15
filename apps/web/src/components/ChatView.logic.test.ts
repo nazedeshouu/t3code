@@ -37,6 +37,7 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
+  ProviderThreadId,
   ThreadId,
   RunId,
   TurnItemId,
@@ -904,6 +905,66 @@ describe("waitForThreadRewind", () => {
         throw new Error("Unavailable mode.");
       }),
     ).rejects.toThrow("Unavailable mode.");
+  });
+});
+
+describe("rewindToMessage", () => {
+  const threadRef = { environmentId: EnvironmentId.make("env-1"), threadId: ThreadId.make("t") };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("restores the rewound message's thread and machine mentions beside the existing draft", async () => {
+    vi.spyOn(session, "readPreparedConnection").mockReturnValue({
+      httpBaseUrl: "http://localhost",
+    } as never);
+    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+    const thread = (id: string, title: string) =>
+      threadContextRecord(
+        { environmentId: threadRef.environmentId, threadId: ThreadId.make(id) },
+        title,
+      );
+    const drafted = thread("drafted-thread", "Drafted thread");
+    const mentioned = thread("referenced-thread", "Other thread");
+    const machine = environmentContextRecord(EnvironmentId.make("env-2"), "Build box");
+    useComposerDraftStore.getState().addThreadContexts(threadRef, [drafted]);
+    const draftPrompt = useComposerDraftStore.getState().getComposerDraft(threadRef)!.prompt;
+    const sentPrompt = ensureInlineContextReferences("Review", [
+      threadContextReference(mentioned),
+      environmentContextReference(machine),
+    ]).trim();
+    const rewind = vi.fn(async () => {});
+
+    const result = await rewindToMessage({
+      message: {
+        id: MessageId.make("message-2"),
+        role: "user",
+        runId: RunId.make("run-2"),
+        streaming: false,
+        createdAt: "2026-03-29T00:00:10.000Z",
+        updatedAt: "2026-03-29T00:00:10.000Z",
+        text: sentPrompt,
+        context: { version: 1, records: [mentioned, machine] },
+      },
+      environmentId: threadRef.environmentId,
+      draftTarget: threadRef,
+      composerHasPendingAttachments: false,
+      createAssetUrl: async () => {
+        throw new Error("No attachment expected");
+      },
+      rewind,
+    });
+
+    const prompt = `${draftPrompt}\n\n${sentPrompt}`;
+    expect(rewind).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      error: null,
+      prefill: { prompt, previousPrompt: draftPrompt, imageIds: [], fileIds: [] },
+    });
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)).toMatchObject({
+      prompt,
+      threadContexts: [drafted, mentioned],
+      environmentContexts: [machine],
+    });
   });
 });
 

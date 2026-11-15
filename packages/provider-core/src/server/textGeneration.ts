@@ -121,6 +121,7 @@ export interface ThreadSummaryGenerationInput {
   /** The user's guidance for what the summary keeps. */
   instructions?: string | undefined;
   modelSelection: ModelSelection;
+  projectId?: ProjectId | null | undefined;
 }
 
 export interface ThreadSummaryGenerationResult {

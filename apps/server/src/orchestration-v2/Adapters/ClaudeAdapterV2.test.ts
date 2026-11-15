@@ -1552,11 +1552,13 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.void,
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -2868,11 +2870,13 @@ describe("ClaudeAdapterV2 native fork", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.void,
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: (input) =>
             Effect.gen(function* () {
               forkCalls.push(input);
@@ -3577,6 +3581,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
     readonly promptSuggestions?: boolean;
     readonly routeModelCatalog?: ClaudeAdapterV2.ClaudeAdapterV2Options["routeModelCatalog"];
+    readonly rewindFiles?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["rewindFiles"];
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -14057,6 +14062,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: isFirstProcess
@@ -14064,6 +14070,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   : Queue.shutdown(sdkMessages),
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -14259,11 +14266,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               readMcpResource: () => Effect.die("unexpected MCP resource read"),
               callMcpTool: () => Effect.die("unexpected MCP tool call"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
+              rewindFiles: () => Effect.succeed({ canRewind: false }),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
               close: Queue.shutdown(sdkMessages),
             };
           }),
+        sessionHasMessage: () => Effect.succeed(true),
         forkSession: () => Effect.die("unused forkSession"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
         subagentModel: () => Effect.succeed(null),
@@ -14433,6 +14442,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   close: Queue.shutdown(queue),
                 };
               }),
+            sessionHasMessage: () => Effect.succeed(true),
             forkSession: () => Effect.die("unused forkSession"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             subagentModel: () => Effect.succeed(null),
@@ -17709,6 +17719,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     : Deferred.succeed(closeSignal, undefined).pipe(Effect.asVoid),
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -20960,11 +20971,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Queue.shutdown(sdkMessages),
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -21144,6 +21157,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   close: Queue.shutdown(sdkMessages),
                 };
               }),
+            sessionHasMessage: () => Effect.succeed(true),
             forkSession: () => Effect.die("unused forkSession"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             subagentModel: () => Effect.succeed(null),
@@ -21317,11 +21331,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Queue.shutdown(sdkMessages),
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -21516,6 +21532,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 readMcpResource: () => Effect.die("unexpected MCP resource read"),
                 callMcpTool: () => Effect.die("unexpected MCP tool call"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
+                rewindFiles: () => Effect.succeed({ canRewind: false }),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.sync(() => {
@@ -21523,6 +21540,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
               };
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),
@@ -21670,6 +21688,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 };
               });
             },
+            sessionHasMessage: () => Effect.succeed(true),
             forkSession: () => Effect.die("unused forkSession"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
             subagentModel: () => Effect.succeed(null),
@@ -21791,6 +21810,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               interrupt: Effect.void,
               close: Queue.shutdown(sdkMessages),
             }),
+          sessionHasMessage: () => Effect.succeed(true),
           forkSession: () => Effect.die("unused forkSession"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
           subagentModel: () => Effect.succeed(null),

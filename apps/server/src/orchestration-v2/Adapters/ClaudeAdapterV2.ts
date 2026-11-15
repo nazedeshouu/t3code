@@ -1249,9 +1249,6 @@ function makeClaudeAgentSdkProtocolLogger(input: {
 }
 
 const encodeClaudeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const decodeClaudeHistoryMessages = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Array(Schema.Struct({ uuid: Schema.String }))),
-);
 const decodeClaudeHistoryFork = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({ sessionId: Schema.String, headMessageId: Schema.optionalKey(Schema.String) }),

@@ -2,7 +2,6 @@ import type {
   DeviceServiceState,
   EnvironmentId,
   MessageId,
-  OrchestrationV2ThreadProjection,
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
@@ -25,7 +24,6 @@ import {
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { WizardPopup } from "../ui/wizard";
-import { findRevertCheckpoint } from "../../session-logic";
 import { registerThreadOverlay } from "./threadOverlayRetention";
 
 /**
