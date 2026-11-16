@@ -6,6 +6,7 @@ import {
   matchComposerEnvironmentItems,
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
+import { orderComposerMentionItems } from "@t3tools/client-runtime/composerPathMention";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import type {
@@ -49,6 +50,7 @@ import {
 } from "../pullRequest/pullRequestList.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 import { matchComposerModelItems } from "./composerModelMentions";
+import { useComposerPathMention } from "./useComposerPathMention";
 import type { ModelEsque } from "./providerIconUtils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
@@ -83,6 +85,7 @@ export function useComposerMenuItems({
   workspaceSkillsScanning,
   questionAttachmentTarget,
   modelMentions,
+  betterFileMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -107,6 +110,8 @@ export function useComposerMenuItems({
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   };
+  /** Labs: `@` browses directories and opens folders. Off keeps the project-wide search alone. */
+  readonly betterFileMentions: boolean;
 }) {
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
@@ -140,10 +145,18 @@ export function useComposerMenuItems({
     ...identity,
     machine: environmentMachines.get(identity.environmentId) ?? ("server" as const),
   }));
+  // The two `@` file behaviours part here: only one of these hooks gets a target, and the other
+  // stays idle and empty.
+  const pathMention = useComposerPathMention(
+    isPathTrigger && betterFileMentions
+      ? { environmentId, cwd: gitCwd, query: pathTriggerQuery }
+      : null,
+  );
+  const searchesWorkspace = isPathTrigger && !betterFileMentions;
   const workspaceEntries = useComposerPathSearch({
     environmentId,
-    cwd: isPathTrigger ? gitCwd : null,
-    query: isPathTrigger ? pathTriggerQuery : null,
+    cwd: searchesWorkspace ? gitCwd : null,
+    query: searchesWorkspace ? pathTriggerQuery : null,
   });
 
   const pullRequestListTargets =
@@ -207,7 +220,8 @@ export function useComposerMenuItems({
   const items = ((): ComposerCommandItem[] => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return [
+      if (pathMention.isBrowsing) return [...pathMention.items];
+      const otherMentions = [
         ...matchComposerThreadItems({
           shells: environmentThreadShells,
           environmentId,
@@ -229,6 +243,10 @@ export function useComposerMenuItems({
           modelOptionsByInstance: modelMentions.modelOptionsByInstance,
           query: composerTrigger.query,
         }),
+      ];
+      if (betterFileMentions) return orderComposerMentionItems(pathMention.items, otherMentions);
+      return [
+        ...otherMentions,
         ...workspaceEntries.entries.map((entry) => ({
           id: `path:${entry.kind}:${entry.path}`,
           type: "path" as const,
@@ -416,7 +434,7 @@ export function useComposerMenuItems({
     return [];
   })();
   const isLoading =
-    (composerTriggerKind === "path" && workspaceEntries.isPending) ||
+    (composerTriggerKind === "path" && (workspaceEntries.isPending || pathMention.isLoading)) ||
     ((composerTriggerKind === "skill" || composerTriggerKind === "slash-command") &&
       workspaceSkillsScanning) ||
     (composerTriggerKind === "pull-request" &&
@@ -444,10 +462,15 @@ export function useComposerMenuItems({
         ? `No pull request matches ${composerTrigger.query}.`
         : "No pull requests found in this repository.";
     }
-    return composerTriggerKind === "path"
-      ? "No matching files or folders."
-      : "No matching command.";
+    return composerTriggerKind === "path" ? pathMention.emptyState : "No matching command.";
   })();
+  const pathBrowse = pathMention.isBrowsing
+    ? {
+        currentFolder: pathMention.currentFolder,
+        spaceMentionsFolder: pathMention.spaceMentionsFolder,
+        hiddenCount: pathMention.hiddenCount,
+      }
+    : null;
 
-  return { items, isLoading, emptyState };
+  return { items, isLoading, emptyState, pathBrowse };
 }

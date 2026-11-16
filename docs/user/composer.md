@@ -346,6 +346,13 @@ its brief details. Select a terminal excerpt to open its captured output, or sel
 comment, picked element, or preview annotation to open its full details. Chips read as "Terminal
 excerpt, Terminal 1 lines 3-4" and similar to screen readers.
 
+On web and desktop, type `@` and part of a name to mention a file or folder from the project.
+With **Settings → Labs → Better @ file mentions** on, a path after `@` browses that folder
+instead: `@src/` lists what is in `src`, `@~/` starts from your home folder on the thread's
+machine, and `@/` from its root. Enter or Tab on a folder opens it, and on a file inserts the
+mention. To mention the folder you are in, press Space right after its `/`. A name with spaces
+is written as `@"my folder/`, which the menu does for you.
+
 A pull request appears as its icon and number. Its color reflects whether it was open, draft,
 merged, or closed when it was attached. Select it to inspect the captured title and branches,
 then choose **Open pull request** to visit the pull request. On web and desktop, type `#` to browse the newest

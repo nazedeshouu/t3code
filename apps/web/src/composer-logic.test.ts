@@ -288,6 +288,24 @@ describe("detectComposerTrigger", () => {
     });
   });
 
+  it.each([
+    ['see @"design notes/color pal', "design notes/color pal", 4],
+    ['@"design', "design", 0],
+    ['done\nsee @"a b/', "a b/", 9],
+  ])("reads the open quoted path in %j as one @ query", (text, query, rangeStart) => {
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "path",
+      query,
+      rangeStart,
+      rangeEnd: text.length,
+    });
+  });
+
+  it.each(['see @"design notes/a.md" and', 'email@"quoted words', '@"first line\nsecond'])(
+    "does not read %j as an open quoted path",
+    (text) => expect(detectComposerTrigger(text, text.length)).toBeNull(),
+  );
+
   it.each(["Use/review", "https://example.com/review", "Use /review "])(
     "does not trigger for %j",
     (text) => expect(detectComposerTrigger(text, text.length)).toBeNull(),

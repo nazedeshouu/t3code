@@ -187,6 +187,18 @@ describe("browse entry filtering", () => {
     ).toEqual([longName, "xfoo"]);
   });
 
+  it("lists folders before files, in a plain listing and within each match tier", () => {
+    const mixed = [
+      { name: "notes.md", fullPath: "~/notes.md", kind: "file" as const },
+      { name: "node_modules", fullPath: "~/node_modules", kind: "directory" as const },
+      { name: "apps", fullPath: "~/apps", kind: "directory" as const },
+    ];
+    const mixedNames = (query: string) =>
+      filterFilesystemBrowseEntries(mixed, query).visibleEntries.map((entry) => entry.name);
+    expect(mixedNames("")).toEqual(["node_modules", "apps", "notes.md"]);
+    expect(mixedNames("no")).toEqual(["node_modules", "notes.md"]);
+  });
+
   it("shows dot folders only when the query starts with a dot", () => {
     expect(names("t3")).not.toContain(".t3");
     expect(filterFilesystemBrowseEntries(entries, ".t3")).toEqual({

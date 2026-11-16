@@ -80,7 +80,13 @@ export function filterFilesystemBrowseEntries(
   const lowerQuery = query.toLowerCase();
   const lowerNormalizedQuery = normalizedQuery.toLowerCase();
   const showHidden = query.startsWith(".");
-  const candidates = entries.filter((entry) => showHidden || !entry.name.startsWith("."));
+  // Directories lead, both in a plain listing and within each match tier. Entries that carry no
+  // kind are all directories, so a directory-only listing keeps the server's order.
+  const filesLast = (left: FilesystemBrowseEntry, right: FilesystemBrowseEntry) =>
+    Number(left.kind === "file") - Number(right.kind === "file");
+  const candidates = entries
+    .filter((entry) => showHidden || !entry.name.startsWith("."))
+    .sort(filesLast);
   const visibleEntries =
     lowerQuery.length === 0
       ? candidates
@@ -116,7 +122,12 @@ export function filterFilesystemBrowseEntries(
           .filter((match): match is { entry: FilesystemBrowseEntry; score: number } => {
             return match.score !== null;
           })
-          .sort((left, right) => left.score - right.score)
+          .sort(
+            (left, right) =>
+              Math.floor(left.score / 1000) - Math.floor(right.score / 1000) ||
+              filesLast(left.entry, right.entry) ||
+              left.score - right.score,
+          )
           .map((match) => match.entry);
   const normalizedMatches = visibleEntries.filter(
     (entry) => entry.name.normalize("NFC") === normalizedQuery,

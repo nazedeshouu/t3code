@@ -662,3 +662,89 @@ it("selecting a side-chat tab focuses that side chat's composer", async () => {
   await expect.element(sideEditor).toHaveFocus();
   await expect.element(mainEditor).toHaveTextContent("main draft");
 });
+
+it("@ browses folders from the keyboard: Enter opens one, Enter on a file mentions it", async () => {
+  using _environment = installFakeEnvironment([]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const listings: Record<string, ReadonlyArray<readonly [string, "file" | "directory"]>> = {
+    "./": [
+      ["src", "directory"],
+      ["README.md", "file"],
+    ],
+    "./src/": Array.from({ length: 30 }, (_, index) => [`module${index}.ts`, "file"] as const),
+  };
+  using _browse = answerRpc(
+    WS_METHODS.filesystemBrowse,
+    ({ partialPath }: { partialPath: string }) => {
+      const parentPath = `/workspace/render/${partialPath.slice(2)}`.replace(/\/$/, "");
+      return Effect.succeed({
+        parentPath,
+        entries: (listings[partialPath] ?? []).map(([name, kind]) => ({
+          name,
+          fullPath: `${parentPath}/${name}`,
+          kind,
+        })),
+      });
+    },
+  );
+  const draftId = DraftId.make("draft-path-mention");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make("thread-path-mention"),
+    });
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const option = (name: string) => page.getByRole("option", { name, exact: true });
+  const menu = page.getByRole("listbox", { name: "Files and folders" });
+  // A relative path resolves against the project, which the shell snapshot brings.
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  await userEvent.click(editor);
+  await userEvent.keyboard("@");
+  await expect.element(option("src/")).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{ArrowDown}");
+  await expect.element(option("README.md")).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{ArrowUp}");
+
+  // Enter on a folder opens it in place and keeps the menu up.
+  await userEvent.keyboard("{Enter}");
+  await expect.element(option("module0.ts")).toHaveAttribute("aria-selected", "true");
+  expect(editor.element().textContent).toBe("@src/");
+
+  // Escape closes the menu and leaves the typed path alone.
+  await userEvent.keyboard("{Escape}");
+  await expect.element(menu).not.toBeInTheDocument();
+  expect(editor.element().textContent).toBe("@src/");
+  // The dismissal lasts for that token; a retyped one opens the menu again.
+  await userEvent.keyboard("{Backspace>5/}@src/");
+  await expect.element(option("module0.ts")).toBeVisible();
+
+  // The highlight wraps to the last row, and the list scrolls to show it.
+  await userEvent.keyboard("{ArrowUp}");
+  await expect.element(option("module29.ts")).toHaveAttribute("aria-selected", "true");
+  await expect.element(option("module29.ts")).toBeInViewport();
+  await expect.element(option("module0.ts")).not.toBeInViewport();
+
+  // Enter on a file inserts the mention and a space, then closes the menu.
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("button", { name: "Preview src/module29.ts" })).toBeVisible();
+  await expect.element(menu).not.toBeInTheDocument();
+  expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+    "[module29.ts](src/module29.ts) ",
+  );
+
+  // Space right after a folder's slash mentions the folder itself.
+  await userEvent.keyboard("@src/");
+  await expect.element(option("module0.ts")).toBeVisible();
+  await userEvent.keyboard(" ");
+  await expect.element(page.getByRole("button", { name: "Preview src" })).toBeVisible();
+});

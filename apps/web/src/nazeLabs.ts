@@ -15,6 +15,13 @@ export const NAZE_LABS = [
     description: "File paths in tool activity open the file. Off shows them as plain text.",
     searchTerms: "tool activity work log file path link open",
   },
+  {
+    id: "naze-file-mentions",
+    title: "Better @ file mentions",
+    description:
+      "Typing a path after @ browses that folder, including ~/ and absolute paths on the thread's machine. Enter opens a folder, Space mentions it. Off searches project file names only.",
+    searchTerms: "mention file folder path at browse home absolute composer",
+  },
 ] as const;
 
 export type NazeLabId = (typeof NAZE_LABS)[number]["id"];

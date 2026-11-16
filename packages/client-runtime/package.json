@@ -19,6 +19,10 @@
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"
     },
+    "./composerPathMention": {
+      "types": "./src/composerPathMention.ts",
+      "default": "./src/composerPathMention.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

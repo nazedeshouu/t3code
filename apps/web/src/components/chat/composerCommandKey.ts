@@ -65,6 +65,8 @@ export function composerCommandKeyHandler(input: {
   readonly composerMenuOpenRef: RefObject<boolean>;
   readonly composerMenuItemsRef: RefObject<ComposerCommandItem[]>;
   readonly activeComposerMenuItemRef: RefObject<ComposerCommandItem | null>;
+  /** The item a Space selects: the folder an `@` path is browsing, right after its slash. */
+  readonly composerSpaceItemRef: RefObject<ComposerCommandItem | null>;
   readonly setComposerDraftPrompt: (
     target: ChatComposerProps["composerDraftTarget"],
     prompt: string,
@@ -124,6 +126,7 @@ export function composerCommandKeyHandler(input: {
     composerMenuOpenRef,
     composerMenuItemsRef,
     activeComposerMenuItemRef,
+    composerSpaceItemRef,
     setComposerDraftPrompt,
     setComposerDraftThreadContexts,
     setComposerDraftEnvironmentContexts,
@@ -262,6 +265,10 @@ export function composerCommandKeyHandler(input: {
       }
       if ((key === "Enter" || key === "Tab") && selectedItem) {
         onSelectComposerItem(selectedItem);
+        return true;
+      }
+      if (key === " " && composerSpaceItemRef.current) {
+        onSelectComposerItem(composerSpaceItemRef.current);
         return true;
       }
     }

@@ -255,8 +255,30 @@ export function collapseExpandedComposerCursor(
   return collapsedCursor;
 }
 
+/**
+ * Where an unclosed `@"` before the cursor starts, or -1. A path with spaces is typed inside the
+ * quote, so the whole of it is one `@` query rather than ending at its first space.
+ */
+function openQuotedMentionStart(text: string, cursor: number): number {
+  if (cursor < 2) return -1;
+  const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
+  const start = text.lastIndexOf('@"', cursor - 2);
+  if (start < lineStart) return -1;
+  if (start > 0 && !isWhitespace(text[start - 1] ?? "")) return -1;
+  return text.slice(start + 2, cursor).includes('"') ? -1 : start;
+}
+
 export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
+  const quotedStart = openQuotedMentionStart(text, cursor);
+  if (quotedStart >= 0) {
+    return {
+      kind: "path",
+      query: text.slice(quotedStart + 2, cursor),
+      rangeStart: quotedStart,
+      rangeEnd: cursor,
+    };
+  }
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
   if (token.startsWith("/")) {
