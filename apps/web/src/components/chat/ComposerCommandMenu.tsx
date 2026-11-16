@@ -138,6 +138,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   emptyStateText?: string;
   /** Set while `@` browses a directory. */
   pathBrowse?: ComposerPathBrowse | null;
+  /** The empty state is an error Enter can't act on; say how to keep the text instead. */
+  showsEscapeHint?: boolean;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -203,8 +205,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             ) : null}
           </CommandList>
         ) : (
-          <div className="px-5 pt-3.5 pb-7">
-            <p className="text-secondary-label text-xs">
+          <div className="flex items-baseline gap-3 px-5 pt-3.5 pb-7">
+            <p className="min-w-0 text-secondary-label text-xs">
               {props.isLoading
                 ? props.triggerKind === "skill" || props.triggerKind === "slash-command"
                   ? "Searching workspace skills..."
@@ -220,6 +222,12 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                       ? "No matching files or folders."
                       : "No matching command."))}
             </p>
+            {props.showsEscapeHint && !props.isLoading ? (
+              <span className="ms-auto flex shrink-0 items-center gap-1.5 text-secondary-label text-xs">
+                <Kbd variant="outline">Esc</Kbd>
+                <span>keep as text</span>
+              </span>
+            ) : null}
           </div>
         )}
       </ComposerBanner.Surface>

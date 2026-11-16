@@ -955,6 +955,8 @@ it("a bare name whose search failed keeps Enter until the menu is dismissed", as
   await userEvent.keyboard("ask @zed{Enter}");
   releaseSearch();
   await expect.element(failure.first()).toBeVisible();
+  // The error says how to get out, since Enter now waits on the user.
+  await expect.element(page.getByText("keep as text")).toBeVisible();
   expect(editor.element().textContent).toBe("ask @zed");
 
   // Nor does one pressed with the failure on screen.

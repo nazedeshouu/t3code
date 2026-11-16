@@ -500,6 +500,12 @@ export function useComposerMenuItems({
       browse: pathMention.browse,
       prose: pathQueryIsProse,
       hidden: pathMenuHidden,
+      /** The lookup itself went wrong, so Enter waits on the user: Esc keeps the text as typed. */
+      showsLookupError:
+        pathMenuHasNoChoice &&
+        (pathMention.miss === "failed" ||
+          pathMention.miss === "missing-folder" ||
+          pathMention.miss === "no-access"),
     },
   };
 }
