@@ -371,6 +371,25 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+/*
+ * The composer card's fill, shared by whichever element draws the card (see ComposerSurface).
+ * Theme CSS restyles the card with --composer-card-color and --composer-card-image, which
+ * reach every drawing element. A selector reaches one of them and misses the other states.
+ */
+@utility composer-card-glass {
+  background-color: var(
+    --composer-card-color,
+    color-mix(in oklab, var(--chat-composer-glass-surface) var(--glass-opacity), transparent)
+  );
+  background-image: var(--composer-card-image, none);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    background-color: var(--chat-composer-glass-surface);
+  }
+}
+
 @utility alert-glass {
   --alert-glass-tint: transparent;
   background:

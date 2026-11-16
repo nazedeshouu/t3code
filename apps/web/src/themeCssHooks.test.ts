@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { THEME_CSS_HOOKS } from "@t3tools/shared/themeCss";
+import { THEME_CSS_HOOKS, THEME_CSS_PROPERTIES } from "@t3tools/shared/themeCss";
 import { expect, it } from "vite-plus/test";
 
 const sourceDirectory = import.meta.dirname;
@@ -24,5 +24,13 @@ it.each(THEME_CSS_HOOKS.map((hook) => hook.selector))(
   "%s is still in the web source",
   (selector) => {
     expect(source).toMatch(sourcePattern(selector));
+  },
+);
+
+// Theme CSS sets these and the agent guide lists them. A property nothing reads restyles nothing.
+it.each(THEME_CSS_PROPERTIES.map((entry) => entry.property))(
+  "%s is still read in the web source",
+  (property) => {
+    expect(source).toMatch(new RegExp(`var\\(\\s*${property}\\b`));
   },
 );

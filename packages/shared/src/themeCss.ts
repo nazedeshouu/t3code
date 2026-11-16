@@ -52,6 +52,7 @@ export const THEME_CSS_HOOKS = [
   { selector: '[data-message-role="assistant"]', styles: "assistant message row" },
   { selector: ".chat-markdown", styles: "assistant text" },
   { selector: ".chat-markdown-codeblock", styles: "code block" },
+  { selector: '[data-slot="composer-shell"]', styles: "composer card and the row under it" },
   { selector: "[data-chat-composer-form]", styles: "composer" },
   { selector: '[data-slot="composer-host"]', styles: "composer card" },
   { selector: ".composer-tiptap", styles: "composer text" },
@@ -68,6 +69,18 @@ export const THEME_CSS_HOOKS = [
   { selector: '[data-slot="tooltip-popup"]', styles: "tooltip" },
   { selector: '[data-slot="scroll-area-scrollbar"]', styles: "overlay scrollbar" },
   { selector: '[data-slot="scroll-area-thumb"]', styles: "overlay scrollbar thumb" },
+] as const;
+
+/**
+ * Custom properties that theme CSS may set, for a surface that no one selector reaches in every
+ * state. themeCssHooks.test.ts in apps/web fails when the web source stops reading one.
+ */
+export const THEME_CSS_PROPERTIES = [
+  { property: "--composer-card-color", styles: "composer card fill" },
+  {
+    property: "--composer-card-image",
+    styles: "composer card background-image, such as a gradient",
+  },
 ] as const;
 
 /** What an agent needs to restyle the app. `t3_theme_read` returns it. */
@@ -87,6 +100,9 @@ export const THEME_GUIDE = [
   "",
   "Stable selectors (other class names change between releases, so do not use them):",
   ...THEME_CSS_HOOKS.map((hook) => `- ${hook.selector}: ${hook.styles}`),
+  "",
+  'Properties. Set them on `[data-slot="composer-shell"]` or above it. A different element draws the composer card when a banner or a row is attached, so a background set by selector goes missing in those states:',
+  ...THEME_CSS_PROPERTIES.map((entry) => `- ${entry.property}: ${entry.styles}`),
   "",
   "You cannot see the result. Make small changes, then ask the user how it looks.",
   "To undo, set a built-in theme: t3-chat, grove, ocean, ember, or iris.",
