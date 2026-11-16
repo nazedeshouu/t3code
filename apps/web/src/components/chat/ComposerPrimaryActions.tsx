@@ -107,16 +107,16 @@ const GLYPH_STROKE = {
 function StopGlyph() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-      <rect x="4" y="4" width="6" height="6" rx="1.25" {...GLYPH_STROKE} />
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" {...GLYPH_STROKE} />
     </svg>
   );
 }
 
-function ResumeGlyph() {
+export function ResumeGlyph() {
   // The triangle's centroid sits on x=7, so it reads centered in the round button.
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-      <path d="M5.25 3.75L10.5 7L5.25 10.25Z" {...GLYPH_STROKE} />
+      <path d="M4.75 3L11.5 7L4.75 11Z" {...GLYPH_STROKE} />
     </svg>
   );
 }
@@ -463,14 +463,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       ) : isRunning ? (
         <CornerUpRightIcon className="size-4" aria-hidden="true" />
       ) : (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path
-            d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" {...GLYPH_STROKE} />
         </svg>
       )}
     </button>
