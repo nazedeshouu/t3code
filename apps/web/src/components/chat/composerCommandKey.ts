@@ -71,6 +71,8 @@ export function composerCommandKeyHandler(input: {
    * its rows and then had no use for runs `whenUnclaimed` instead.
    */
   readonly onPathMenuKey: (key: PathMenuKey, whenUnclaimed: () => void) => boolean;
+  /** The `@` menu has no row and is off screen, as for prose (`thanks @sam`). */
+  readonly pathMenuHidden: boolean;
   readonly setComposerDraftPrompt: (
     target: ChatComposerProps["composerDraftTarget"],
     prompt: string,
@@ -131,6 +133,7 @@ export function composerCommandKeyHandler(input: {
     composerMenuItemsRef,
     activeComposerMenuItemRef,
     onPathMenuKey,
+    pathMenuHidden,
     setComposerDraftPrompt,
     setComposerDraftThreadContexts,
     setComposerDraftEnvironmentContexts,
@@ -287,11 +290,15 @@ export function composerCommandKeyHandler(input: {
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
     if (key === "Escape") {
       if (event.isComposing || event.keyCode === 229) return false;
-      if (!menuIsActive && promptSuggestion !== null && promptRef.current.length === 0) {
+      // Escape closes a menu that is on screen. A hidden one has nothing to close, so the key
+      // goes on to whatever listens outside the composer. Enter and Space still ask the hidden
+      // menu below: its answer may be on the way.
+      const menuIsShown = menuIsActive && !pathMenuHidden;
+      if (!menuIsShown && promptSuggestion !== null && promptRef.current.length === 0) {
         dismissPromptSuggestion();
         return true;
       }
-      if (!menuIsActive) return false;
+      if (!menuIsShown) return false;
       dismissComposerTrigger(trigger);
       composerMenuOpenRef.current = false;
       return true;

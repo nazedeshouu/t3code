@@ -907,6 +907,16 @@ it("a scoped package name after @ is prose: no menu, and Enter sends", async () 
   await userEvent.keyboard("upgrade @types/node");
   await expect.element(editor).toHaveTextContent("upgrade @types/node");
   expect(document.querySelector("[data-composer-command-drawer]")).toBeNull();
+
+  // With no menu on screen, Escape is not the composer's to take.
+  const heardOutside = vi.fn();
+  window.addEventListener("keydown", heardOutside);
+  using _listener = {
+    [Symbol.dispose]: () => window.removeEventListener("keydown", heardOutside),
+  };
+  await userEvent.keyboard("{Escape}");
+  expect(heardOutside).toHaveBeenCalledWith(expect.objectContaining({ key: "Escape" }));
+
   await userEvent.keyboard("{Enter}");
   await expect.element(editor).toHaveTextContent("");
 });

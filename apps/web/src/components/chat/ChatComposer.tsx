@@ -2416,6 +2416,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeComposerMenuItemRef,
       onPathMenuKey,
       setComposerDraftPrompt,
+      pathMenuHidden: composerPathMenu.hidden,
       setComposerDraftThreadContexts,
       setComposerDraftEnvironmentContexts,
       setComposerCursor,
