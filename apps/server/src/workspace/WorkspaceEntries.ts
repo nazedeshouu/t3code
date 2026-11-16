@@ -124,6 +124,21 @@ const IGNORE_CHECK_CHUNK_SIZE = 1000;
 /** Children classified at once when listing a folder; each symlink costs a realpath and a stat. */
 const SYMLINK_RESOLVE_BATCH_SIZE = 64;
 
+/** Entries one file-inclusive browse returns; a longer typed prefix reaches the rest. */
+const BROWSE_WITH_FILES_LIMIT = 2000;
+
+/**
+ * `~/Users/me/x` written by someone who meant `/Users/me/x`: when the part after `~/` already
+ * spells out the home directory, it is that absolute path.
+ */
+function expandBrowseHomePath(partialPath: string, home: string, path: Path.Path): string {
+  if (partialPath.startsWith("~/")) {
+    const spelledOut = path.resolve("/", partialPath.slice(2));
+    if (spelledOut === home || spelledOut.startsWith(`${home}${path.sep}`)) return spelledOut;
+  }
+  return expandHomePath(partialPath, home);
+}
+
 const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(function* (
   input: FilesystemBrowseInput,
   path: Path.Path,
@@ -138,7 +153,9 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
   }
 
   if (!isExplicitRelativePath(input.partialPath)) {
-    return path.resolve(expandHomePath(input.partialPath, yield* HostProcess.HomeDirectory));
+    return path.resolve(
+      expandBrowseHomePath(input.partialPath, yield* HostProcess.HomeDirectory, path),
+    );
   }
 
   if (!input.cwd) {
@@ -231,23 +248,52 @@ export const make = Effect.gen(function* () {
 
       const showHidden = endsWithSeparator || prefix.startsWith(".");
       const lowerPrefix = prefix.toLowerCase();
-      const entries: Array<{ readonly name: string; readonly fullPath: string }> = [];
-      for (const dirent of dirents) {
-        if (
-          dirent.isDirectory() &&
-          dirent.name.toLowerCase().startsWith(lowerPrefix) &&
-          (showHidden || !dirent.name.startsWith("."))
-        ) {
-          entries.push({
-            name: dirent.name,
-            fullPath: path.join(parentPath, dirent.name),
-          });
-        }
+      const matches = dirents
+        .filter(
+          (dirent) =>
+            dirent.name.toLowerCase().startsWith(lowerPrefix) &&
+            (showHidden || !dirent.name.startsWith(".")),
+        )
+        .toSorted((left, right) =>
+          left.name.localeCompare(right.name, undefined, { numeric: true }),
+        );
+
+      if (!input.includeFiles) {
+        return {
+          parentPath,
+          entries: matches
+            .filter((dirent) => dirent.isDirectory())
+            .map((dirent) => ({ name: dirent.name, fullPath: path.join(parentPath, dirent.name) })),
+        };
       }
 
+      const listed = matches.slice(0, BROWSE_WITH_FILES_LIMIT);
+      const entries: Array<FilesystemBrowseResult["entries"][number]> = [];
+      for (let offset = 0; offset < listed.length; offset += SYMLINK_RESOLVE_BATCH_SIZE) {
+        const batch = listed.slice(offset, offset + SYMLINK_RESOLVE_BATCH_SIZE);
+        const kinds = yield* Effect.promise(() =>
+          Promise.all(
+            batch.map(async (dirent) => {
+              if (dirent.isDirectory()) return "directory" as const;
+              if (dirent.isFile()) return "file" as const;
+              if (!dirent.isSymbolicLink()) return undefined;
+              const stat = await NodeFSP.stat(path.join(parentPath, dirent.name)).catch(
+                () => undefined,
+              );
+              return stat?.isDirectory() ? "directory" : stat?.isFile() ? "file" : undefined;
+            }),
+          ),
+        );
+        batch.forEach((dirent, index) => {
+          const kind = kinds[index];
+          if (kind === undefined) return;
+          entries.push({ name: dirent.name, fullPath: path.join(parentPath, dirent.name), kind });
+        });
+      }
       return {
         parentPath,
-        entries: entries.toSorted((left, right) => left.name.localeCompare(right.name)),
+        entries,
+        ...(matches.length > listed.length ? { truncated: true } : {}),
       };
     },
   );

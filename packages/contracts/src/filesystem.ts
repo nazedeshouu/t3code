@@ -29,18 +29,24 @@ export type FilesystemGetMetadataResult = typeof FilesystemGetMetadataResult.Typ
 export const FilesystemBrowseInput = Schema.Struct({
   partialPath: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
   cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
+  /** Lists files too and marks each entry's kind. Older servers ignore it and list directories. */
+  includeFiles: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseInput = typeof FilesystemBrowseInput.Type;
 
 export const FilesystemBrowseEntry = Schema.Struct({
   name: TrimmedNonEmptyString,
   fullPath: TrimmedNonEmptyString,
+  /** Set when the request asked for files; an entry without it is a directory. */
+  kind: Schema.optional(Schema.Literals(["file", "directory"])),
 });
 export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 
 export const FilesystemBrowseResult = Schema.Struct({
   parentPath: TrimmedNonEmptyString,
   entries: Schema.Array(FilesystemBrowseEntry),
+  /** The directory holds more entries than one listing carries; a longer prefix narrows it. */
+  truncated: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
 

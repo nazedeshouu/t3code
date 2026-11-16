@@ -1103,6 +1103,58 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
+    it.effect("lists files beside directories, by what symlinks point to, when asked", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-files-" });
+        yield* writeTextFile(cwd, "src/index.ts", "");
+        yield* writeTextFile(cwd, "release notes.md", "");
+        yield* fileSystem.symlink("src", path.join(cwd, "link"));
+        yield* fileSystem.symlink("missing", path.join(cwd, "dangling"));
+
+        const result = yield* workspaceEntries.browse({
+          partialPath: "./",
+          cwd,
+          includeFiles: true,
+        });
+
+        expect(result).toEqual({
+          parentPath: cwd,
+          entries: [
+            { name: "link", fullPath: path.join(cwd, "link"), kind: "directory" },
+            {
+              name: "release notes.md",
+              fullPath: path.join(cwd, "release notes.md"),
+              kind: "file",
+            },
+            { name: "src", fullPath: path.join(cwd, "src"), kind: "directory" },
+          ],
+        });
+      }),
+    );
+
+    it.effect("reads a ~/ path that spells out the home directory as that absolute path", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir({ prefix: "t3code-workspace-browse-home-" });
+        yield* writeTextFile(home, "notes/todo.md", "");
+
+        const browse = (partialPath: string) =>
+          workspaceEntries
+            .browse({ partialPath })
+            .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+
+        const fromHome = yield* browse("~/notes/");
+        const spelledOut = yield* browse(`~${home}/notes/`);
+
+        expect(fromHome.parentPath).toBe(path.join(home, "notes"));
+        expect(spelledOut.parentPath).toBe(path.join(home, "notes"));
+      }),
+    );
+
     it.effect("marks only a missing directory as missing when browsing fails", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
