@@ -166,6 +166,25 @@ const expandBrowseHomePath = Effect.fn("WorkspaceEntries.expandBrowseHomePath")(
   return underHome?.isDirectory() ? expanded : path.resolve("/", typed);
 });
 
+/**
+ * The root folder on the way to home (`Users` for `/Users/me`), unless home holds an entry of
+ * that name or a typed name rules it out. `expandBrowseHomePath` reads `~/Users/` from the root,
+ * so a listing of `~/` carries the folder that path opens, for a client to offer as `~/Us` is
+ * typed. It is the one entry whose `fullPath` lies outside the listed folder.
+ */
+const rootFolderTowardHome = (
+  typedName: string,
+  homeEntryNames: ReadonlyArray<string>,
+  home: string,
+  path: Path.Path,
+) => {
+  const root = path.resolve("/");
+  const [name] = path.relative(root, home).split(path.sep);
+  if (!name || name === ".." || homeEntryNames.includes(name)) return undefined;
+  if (rankPathEntries([{ name }], typedName).length === 0) return undefined;
+  return { name, fullPath: path.join(root, name), kind: "directory" as const };
+};
+
 const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(function* (
   input: FilesystemBrowseInput,
   path: Path.Path,
@@ -333,6 +352,15 @@ export const make = Effect.gen(function* () {
           if (kind === undefined) return;
           entries.push({ name: dirent.name, fullPath: path.join(parentPath, dirent.name), kind });
         });
+      }
+      if (directoryPath === "~/") {
+        const towardHome = rootFolderTowardHome(
+          prefix,
+          dirents.map((dirent) => dirent.name),
+          yield* HostProcess.HomeDirectory,
+          path,
+        );
+        if (towardHome) entries.push(towardHome);
       }
       return {
         parentPath,

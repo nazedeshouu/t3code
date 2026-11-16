@@ -277,7 +277,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
 
   const { directory, fragment, cwd } = target;
   const source = sourceOf(target);
-  const matches = rankComposerBrowseEntries(result.entries, fragment);
+  const matches = rankComposerBrowseEntries(result, fragment);
   const rows = matches.slice(0, MENU_ROW_LIMIT);
   const emphasis = matchEmphasis(
     rows.map((entry) => entry.name),

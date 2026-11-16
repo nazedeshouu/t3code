@@ -104,7 +104,9 @@ describe("rankComposerBrowseEntries", () => {
     entry("notes2.md", "file"),
   ];
   const names = (fragment: string) =>
-    rankComposerBrowseEntries(entries, fragment).map((candidate) => candidate.name);
+    rankComposerBrowseEntries({ parentPath: "/work/app", entries }, fragment).map(
+      (candidate) => candidate.name,
+    );
 
   it("lists folders before files, A to Z, and leaves dotfiles out until asked", () => {
     expect(names("")).toEqual([
@@ -124,13 +126,30 @@ describe("rankComposerBrowseEntries", () => {
     expect(names("no")).toEqual(["notes2.md", "notes10.md"]);
   });
 
+  it("offers the root folder a ~/ listing carries only once a name is typed", () => {
+    const home = {
+      parentPath: "/Users/me",
+      entries: [
+        { name: "Music", fullPath: "/Users/me/Music", kind: "directory" as const },
+        { name: "Users", fullPath: "/Users", kind: "directory" as const },
+      ],
+    };
+    const homeNames = (fragment: string) =>
+      rankComposerBrowseEntries(home, fragment).map((candidate) => candidate.name);
+    expect(homeNames("")).toEqual(["Music"]);
+    expect(homeNames("Us")).toEqual(["Users", "Music"]);
+  });
+
   it("lists only dotfiles for a fragment that starts with a dot", () => {
     expect(names(".")).toEqual([".env.example", ".git", ".github", ".gitignore", ".prettierrc"]);
     expect(names(".e")).toEqual([".env.example", ".gitignore", ".prettierrc"]);
   });
 
   it("treats an entry without a kind, from an older server, as a folder", () => {
-    const legacy = [{ name: "src", fullPath: "/work/app/src" }, entry("a.ts", "file")];
+    const legacy = {
+      parentPath: "/work/app",
+      entries: [{ name: "src", fullPath: "/work/app/src" }, entry("a.ts", "file")],
+    };
     expect(rankComposerBrowseEntries(legacy, "").map((candidate) => candidate.name)).toEqual([
       "src",
       "a.ts",

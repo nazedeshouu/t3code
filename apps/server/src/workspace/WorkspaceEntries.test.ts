@@ -1170,6 +1170,45 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
+    it.effect("lists the root folder on the way to home alongside ~/", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir({ prefix: "t3code-workspace-browse-toward-home-" });
+        yield* writeTextFile(home, "notes/todo.md", "");
+        const firstSegment = home.split(path.sep)[1]!;
+        const rootFolder = {
+          name: firstSegment,
+          fullPath: path.join(path.resolve("/"), firstSegment),
+          kind: "directory",
+        };
+        const browse = (partialPath: string, includeFiles = true) =>
+          workspaceEntries
+            .browse({ partialPath, includeFiles })
+            .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+        const names = (result: { entries: ReadonlyArray<{ name: string }> }) =>
+          result.entries.map((entry) => entry.name);
+
+        // `~/Us` is on its way to `~/Users/…`, which is read from the root.
+        const listed = yield* browse("~/");
+        expect(listed.parentPath).toBe(home);
+        expect(listed.entries).toContainEqual(rootFolder);
+        expect((yield* browse(`~/${firstSegment.slice(0, 2)}`)).entries).toContainEqual(rootFolder);
+        expect((yield* browse(`~/${firstSegment}/`)).parentPath).toBe(rootFolder.fullPath);
+
+        // Not for a name it does not match, a folder below home, or the directory picker.
+        expect(names(yield* browse("~/no"))).toEqual(["notes"]);
+        expect(names(yield* browse("~/notes/"))).toEqual(["todo.md"]);
+        expect(names(yield* browse("~/", false))).toEqual(["notes"]);
+
+        // A folder of that name under home is the one `~/` means, so it is listed alone.
+        yield* writeTextFile(home, `${firstSegment}/mine.md`, "");
+        expect((yield* browse(`~/${firstSegment}`)).entries).toEqual([
+          { name: firstSegment, fullPath: path.join(home, firstSegment), kind: "directory" },
+        ]);
+      }),
+    );
+
     it.effect("matches a typed name the same way however many entries the folder holds", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;

@@ -1,4 +1,4 @@
-import type { FilesystemBrowseEntry } from "@t3tools/contracts";
+import type { FilesystemBrowseEntry, FilesystemBrowseResult } from "@t3tools/contracts";
 import {
   entryNameMatchRanges,
   rankPathEntries,
@@ -81,17 +81,20 @@ export function composerMentionPath(fullPath: string, cwd: string | null): strin
 }
 
 /**
- * A browsed directory's entries for the fragment typed inside it. With nothing typed, folders
- * lead; a typed fragment orders folders and files together by how closely their names match.
- * An entry without a kind comes from a server that lists folders only.
+ * A browsed directory's entries for the typed fragment: folders first with nothing typed, else
+ * folders and files together by closeness of name. An entry without a kind is a folder, from a
+ * server that lists only those. The one entry a `~/` listing carries from outside it, the root
+ * folder `~/Users/…` is read from, answers a typed name (`~/Us`) and is no part of the contents.
  */
 export function rankComposerBrowseEntries(
-  entries: ReadonlyArray<FilesystemBrowseEntry>,
+  listing: Pick<FilesystemBrowseResult, "parentPath" | "entries">,
   fragment: string,
 ): ReadonlyArray<FilesystemBrowseEntry> {
-  const ranked = rankPathEntries(entries, fragment);
-  if (fragment.length > 0) return ranked;
-  return ranked.sort((left, right) => Number(left.kind === "file") - Number(right.kind === "file"));
+  if (fragment.length > 0) return rankPathEntries(listing.entries, fragment);
+  const contents = listing.entries.filter((entry) => entry.fullPath.startsWith(listing.parentPath));
+  return rankPathEntries(contents, fragment).sort(
+    (left, right) => Number(left.kind === "file") - Number(right.kind === "file"),
+  );
 }
 
 /** A bare `@word`'s search results, ranked. */
