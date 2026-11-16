@@ -348,7 +348,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
             `${hiddenCount.toLocaleString()}${result.truncated ? "+" : ""} more. Keep typing to narrow.`
           : null,
     },
-    emptyState: BROWSE_GAP_TEXT[composerBrowseGap(result, fragment)],
+    emptyState: BROWSE_GAP_TEXT[composerBrowseGap(result, fragment, narrows)],
   };
 }
 

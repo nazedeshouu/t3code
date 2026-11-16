@@ -173,7 +173,11 @@ describe("composerBrowseGap", () => {
     [[outside], "x", "empty"],
     [[inside, outside], "", "only-hidden"],
   ] as const)("a folder listed as %j with %j typed is %s", (entries, fragment, gap) => {
-    expect(composerBrowseGap({ entries }, fragment)).toBe(gap);
+    expect(composerBrowseGap({ entries }, fragment, false)).toBe(gap);
+  });
+
+  it("reads a folder too large for one listing, narrowed to nothing, as no match", () => {
+    expect(composerBrowseGap({ entries: [] }, "x", true)).toBe("no-match");
   });
 });
 

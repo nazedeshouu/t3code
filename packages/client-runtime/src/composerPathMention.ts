@@ -108,12 +108,18 @@ export type ComposerBrowseGap =
   /** It has entries, and none matches the typed name. */
   | "no-match";
 
-/** Entries from outside the folder do not count: a home holding nothing is still empty. */
+/**
+ * Entries from outside the folder do not count: a home holding nothing is still empty. A listing
+ * the server already narrowed by the typed name says nothing about the rest of the folder.
+ */
 export function composerBrowseGap(
   listing: Pick<FilesystemBrowseResult, "entries">,
   fragment: string,
+  narrowedByServer: boolean,
 ): ComposerBrowseGap {
-  if (!listing.entries.some(isInListedFolder)) return "empty";
+  if (!listing.entries.some(isInListedFolder)) {
+    return narrowedByServer && fragment.length > 0 ? "no-match" : "empty";
+  }
   return fragment.length === 0 ? "only-hidden" : "no-match";
 }
 
