@@ -97,15 +97,14 @@ describe("resolvePathMenuKey", () => {
     });
   });
 
-  it("chooses rows of other kinds right away", () => {
+  it("holds a thread row until the files answer, so Enter takes what the menu then shows first", () => {
     const thread = { id: "thread:1", type: "thread" } as ComposerCommandItem;
-    expect(
-      resolvePathMenuKey(
-        "choose",
-        live("deploy"),
-        menu({ target: target("dep"), settled: false, item: thread }),
-      ),
-    ).toEqual({ type: "select", item: thread });
+    const pending = menu({ target: target("deploy"), settled: false, item: thread });
+    expect(resolvePathMenuKey("choose", live("deploy"), pending)).toEqual({ type: "wait" });
+    expect(resolvePathMenuKey("choose", live("deploy"), { ...pending, settled: true })).toEqual({
+      type: "select",
+      item: thread,
+    });
   });
 
   it("mentions the browsed folder on Space only right after its slash", () => {

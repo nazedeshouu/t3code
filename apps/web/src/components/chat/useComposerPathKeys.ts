@@ -51,12 +51,10 @@ export function resolvePathMenuKey(
     if (!answered) return { type: "wait" };
     return menu.folder ? { type: "select", item: menu.folder } : { type: "pass" };
   }
-  const { item } = menu;
-  // Rows of other kinds (threads, machines, models) match locally and are never out of date.
-  if (item && (item.type !== "path-entry" || samePathMentionTarget(item.source, live))) {
-    return { type: "select", item };
-  }
+  // Rows that match at once (threads, models) wait for the files too: the key takes what the
+  // answered menu shows first, however fast it was pressed.
   if (!answered) return { type: "wait" };
+  if (menu.item) return { type: "select", item: menu.item };
   if (menu.prose) return { type: "pass" };
   // An empty folder leaves one thing to choose, the folder itself. A missing or unreadable one,
   // or a name matching nothing, leaves none.
