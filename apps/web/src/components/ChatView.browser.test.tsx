@@ -1,8 +1,11 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  AuthFilesystemReadScope,
+  AuthStandardClientScopes,
   EnvironmentId,
   FilesystemBrowseError,
+  ProjectSearchEntriesError,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
@@ -31,6 +34,7 @@ import { usePromptStashStore } from "~/promptStashStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { environmentSession } from "~/state/session";
 import { environmentThreadDetails } from "~/state/threads";
 import {
   ENVIRONMENT_ID,
@@ -42,6 +46,7 @@ import {
   emitThreadEvent,
   hasPendingAssetUrl,
   installFakeEnvironment,
+  limitSessionPermissions,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
@@ -901,6 +906,83 @@ it("a scoped package name after @ is prose: no menu, and Enter sends", async () 
   await userEvent.click(editor);
   await userEvent.keyboard("upgrade @types/node");
   await expect.element(editor).toHaveTextContent("upgrade @types/node");
+  expect(document.querySelector("[data-composer-command-drawer]")).toBeNull();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(editor).toHaveTextContent("");
+});
+
+it("a bare name whose search failed keeps Enter until the menu is dismissed", async () => {
+  using _environment = installFakeEnvironment([]);
+  let releaseSearch = () => {};
+  const searched = new Promise<void>((resolve) => {
+    releaseSearch = resolve;
+  });
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.promise(() => searched).pipe(
+      Effect.andThen(
+        Effect.fail(
+          new ProjectSearchEntriesError({
+            cwd: "/work",
+            queryLength: 3,
+            limit: 1,
+            failure: "search_index_search_failed",
+          }),
+        ),
+      ),
+    ),
+  );
+  const { router } = await draftRouter("path-search-failed");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const failure = page.getByText("Couldn't search this project's files.");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // An Enter already waiting when the search fails does not send: `zed` may well be a file.
+  await userEvent.click(editor);
+  await userEvent.keyboard("ask @zed{Enter}");
+  releaseSearch();
+  await expect.element(failure.first()).toBeVisible();
+  expect(editor.element().textContent).toBe("ask @zed");
+
+  // Nor does one pressed with the failure on screen.
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("ask @zed");
+  expect(dispatchedCommands()).toEqual([]);
+
+  // Escape puts the menu away, and the text is the user's to send as it stands.
+  await userEvent.keyboard("{Escape}");
+  await expect.element(failure).not.toBeInTheDocument();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(editor).toHaveTextContent("");
+});
+
+it("without file access an @ word is prose, while a path says files can't be read", async () => {
+  using _environment = installFakeEnvironment([]);
+  using _permissions = limitSessionPermissions(
+    AuthStandardClientScopes.filter((scope) => scope !== AuthFilesystemReadScope),
+    () => appAtomRegistry.refresh(environmentSession.sessionStateAtom(ENVIRONMENT_ID)),
+  );
+  const { router } = await draftRouter("path-no-access");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const noAccess = page.getByText("This connection can't read files on this machine.");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  await userEvent.click(editor);
+  await userEvent.keyboard("see @docs/");
+  await expect.element(noAccess.first()).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("see @docs/");
+
+  // There is nothing to look a bare word up in, so it gets no menu and Enter sends.
+  await userEvent.keyboard("{Backspace>5/}kim");
+  await expect.element(noAccess).not.toBeInTheDocument();
   expect(document.querySelector("[data-composer-command-drawer]")).toBeNull();
   await userEvent.keyboard("{Enter}");
   await expect.element(editor).toHaveTextContent("");

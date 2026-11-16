@@ -56,8 +56,8 @@ export function resolvePathMenuKey(
   if (!answered) return { type: "wait" };
   if (menu.item) return { type: "select", item: menu.item };
   if (menu.prose) return { type: "pass" };
-  // An empty folder leaves one thing to choose, the folder itself. A missing or unreadable one,
-  // or a name matching nothing, leaves none.
+  // An empty folder leaves one thing to choose, the folder itself. A missing or unreadable
+  // folder, a failed search, or a name matching nothing leaves none.
   return menu.folder ? { type: "select", item: menu.folder } : { type: "ignore" };
 }
 

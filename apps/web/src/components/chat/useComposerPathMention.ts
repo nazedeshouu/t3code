@@ -159,7 +159,16 @@ function resultKeyOf(target: PathMentionTarget): string {
   return JSON.stringify(sourceOf(target));
 }
 
+/**
+ * Whether this connection is known to lack permission to read files. A connection that is down,
+ * or whose permissions could not be checked, carries an error instead and counts as a failure.
+ */
+function lacksReadAccess(access: ReturnType<typeof useFilesystemReadAccess>): boolean {
+  return !access.isPending && !access.canReadFiles && access.error === null;
+}
+
 function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention {
+  const fileAccess = useFilesystemReadAccess(target?.environmentId ?? null);
   const search = useComposerPathSearch({
     environmentId: target?.environmentId ?? null,
     cwd: target?.cwd ?? null,
@@ -167,6 +176,8 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
   });
   const entries = useOwnResult(search.isPending ? null : search.entries, target);
   if (target === null) return NOTHING;
+  // Without access no search runs, so there is no answer to wait for.
+  if (lacksReadAccess(fileAccess)) return { ...NOTHING, miss: "no-access" };
   const isLoading = search.isPending && entries === null;
   const failed = !search.isPending && search.error !== null;
   const pending: ComposerPathMention = {
@@ -251,7 +262,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
     return {
       ...unanswered,
       emptyState: fileAccess.error ?? "This connection can't read files on this machine.",
-      miss: "failed",
+      miss: lacksReadAccess(fileAccess) ? "no-access" : "failed",
     };
   }
   if (needsProject) {

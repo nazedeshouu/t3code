@@ -201,7 +201,9 @@ export type ComposerPathMiss =
   | "no-match"
   /** The typed folder does not exist. */
   | "missing-folder"
-  /** The lookup itself failed: no permission, no connection. */
+  /** This connection is not allowed to read files, so nothing was looked up. */
+  | "no-access"
+  /** The lookup broke: no permission for that folder, no connection, a server error. */
   | "failed";
 
 /**
@@ -216,24 +218,27 @@ export function isComposerPathQueryProse(
   quoted: boolean,
   miss: Exclude<ComposerPathMiss, "pending">,
 ): boolean {
+  // A lookup that broke says nothing about the text. The menu stays up to report it, and Enter
+  // stays with the menu, so a draft is never sent on the strength of an error.
+  if (miss === "failed") return false;
   const parsed = parseComposerPathQuery(query);
-  // A bare word (`@sam`) is a mention only once something matches it.
+  // A bare word (`@sam`) is a mention only once something matches it. Where files cannot be read
+  // at all there is nothing to match, and an error under every `@word` would only be noise.
   if (parsed.mode === "search") return true;
   // So are quoted words (`@"so-called`). Unquoted, no directory means the project root's listing.
   if (parsed.directory.length === 0) return quoted;
   // A path that says where it starts (`~/`, `/`, `./`, `../`) is a path, found or not.
   if (ANCHORED_DIRECTORY.test(parsed.directory)) return false;
   // A relative one is prose only once its folder is known to be missing: `@types/node` sends.
-  // An empty `docs/` browses, and a folder that could not be read is still a path, so Enter
-  // stays with the menu's error instead of sending the draft.
+  // An empty `docs/` browses, and without file access `docs/` keeps the menu to say so.
   return miss === "missing-folder";
 }
 
 /**
  * Whether the `@` menu stays out of sight for a query with no row to choose. Settled, prose hides
- * it, but a failed lookup always shows to say so. Pending, it keeps the visibility it had for the
- * previous query (`wasHidden`), so it neither flashes open on `@types/` nor blinks shut between
- * `@src` and `@src/`; with no previous query it opens only for what must be a path.
+ * it. Pending, it keeps the visibility it had for the previous query (`wasHidden`), so it neither
+ * flashes open on `@types/` nor blinks shut between `@src` and `@src/`; with no previous query it
+ * opens only for what must be a path.
  */
 export function isComposerPathMenuHidden(
   query: string,
@@ -244,5 +249,5 @@ export function isComposerPathMenuHidden(
   if (miss === "pending") {
     return wasHidden ?? isComposerPathQueryProse(query, quoted, "missing-folder");
   }
-  return miss !== "failed" && isComposerPathQueryProse(query, quoted, miss);
+  return isComposerPathQueryProse(query, quoted, miss);
 }

@@ -274,17 +274,29 @@ describe("isComposerPathQueryProse", () => {
   it.each([
     // A bare word or quoted words are prose until something matches.
     ["sam", false, "no-match", true],
-    ["sam", false, "failed", true],
     ["so-called", true, "no-match", true],
     [".hidden gem", true, "no-match", true],
+    // Without file access there is nothing to look a word up in, so it is prose too.
+    ["sam", false, "no-access", true],
+    ["so-called", true, "no-access", true],
+    // A lookup that broke is never prose, whatever was typed: Enter must not send on an error.
+    ["sam", false, "failed", false],
+    ["so-called", true, "failed", false],
+    [".hidden gem", true, "failed", false],
+    ["types/node", false, "failed", false],
     // A relative path is prose only when its folder is known to be missing.
     ["types/node", false, "missing-folder", true],
     ["either/or was fine", true, "missing-folder", true],
     ["docs/", false, "no-match", false],
     ["design notes/", true, "no-match", false],
     ["src/zzz", false, "no-match", false],
-    // A folder that could not be read may well exist, so its path is not prose.
     ["src/private/", false, "failed", false],
+    // A path typed without file access keeps the menu, which says files cannot be read.
+    ["docs/", false, "no-access", false],
+    ["~/", false, "no-access", false],
+    ["/etc/", false, "no-access", false],
+    ["./src/", false, "no-access", false],
+    ["../", false, "no-access", false],
     // A path that says where it starts is a path whatever it finds.
     ["~/nope/", false, "missing-folder", false],
     ["/nope/x", false, "missing-folder", false],
@@ -305,9 +317,12 @@ describe("isComposerPathMenuHidden", () => {
     ["types/node", "missing-folder", false, true],
     ["docs/", "no-match", true, false],
     ["~/nope/", "missing-folder", true, false],
-    // A lookup that failed always says so, prose or not.
+    // A lookup that broke always says so.
     ["sam", "failed", true, false],
     ["src/private/", "failed", true, false],
+    // Without file access a bare word is quiet prose, and a path still gets the reason.
+    ["sam", "no-access", false, true],
+    ["docs/", "no-access", true, false],
     // Pending: the menu stays as it was for the previous query.
     ["src/", "pending", false, false],
     ["src", "pending", false, false],
