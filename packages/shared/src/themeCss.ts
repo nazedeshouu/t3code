@@ -54,7 +54,10 @@ export const THEME_CSS_HOOKS = [
   { selector: ".chat-markdown-codeblock", styles: "code block" },
   { selector: '[data-slot="composer-shell"]', styles: "composer card and the row under it" },
   { selector: "[data-chat-composer-form]", styles: "composer" },
-  { selector: '[data-slot="composer-host"]', styles: "composer card" },
+  {
+    selector: '[data-slot="composer-host"]',
+    styles: "composer card box; set its fill with the properties below",
+  },
   { selector: ".composer-tiptap", styles: "composer text" },
   { selector: "[data-thread-details-card]", styles: "thread details card" },
   { selector: "[data-thread-terminal-drawer]", styles: "terminal drawer" },
@@ -76,7 +79,10 @@ export const THEME_CSS_HOOKS = [
  * state. themeCssHooks.test.ts in apps/web fails when the web source stops reading one.
  */
 export const THEME_CSS_PROPERTIES = [
-  { property: "--composer-card-color", styles: "composer card fill" },
+  {
+    property: "--composer-card-color",
+    styles: "composer card background-color; keep it translucent so the blur behind it shows",
+  },
   {
     property: "--composer-card-image",
     styles: "composer card background-image, such as a gradient",
@@ -101,7 +107,7 @@ export const THEME_GUIDE = [
   "Stable selectors (other class names change between releases, so do not use them):",
   ...THEME_CSS_HOOKS.map((hook) => `- ${hook.selector}: ${hook.styles}`),
   "",
-  'Properties. Set them on `[data-slot="composer-shell"]` or above it. A different element draws the composer card when a banner or a row is attached, so a background set by selector goes missing in those states:',
+  'Custom properties. Set them on `[data-slot="composer-shell"]` or an ancestor, not on the card\'s own elements: a different element draws the card when a banner or a row is attached, so a background set by selector goes missing in those states.',
   ...THEME_CSS_PROPERTIES.map((entry) => `- ${entry.property}: ${entry.styles}`),
   "",
   "You cannot see the result. Make small changes, then ask the user how it looks.",

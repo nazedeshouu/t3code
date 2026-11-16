@@ -4,8 +4,8 @@ import { cn } from "~/lib/utils";
 
 /**
  * One of three elements draws the card: the shell, the host when a context row sits below it,
- * or the main surface when a banner is attached above it. All three use `composer-card-glass`,
- * so the card looks the same whichever one is drawing.
+ * or the main surface when a banner is attached above it. All three take the one fill utility
+ * in index.css, so the card looks the same whichever one is drawing.
  */
 function Shell({
   contextRow = false,

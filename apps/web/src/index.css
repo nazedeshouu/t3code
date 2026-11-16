@@ -386,7 +386,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
 
   @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-    background-color: var(--chat-composer-glass-surface);
+    background-color: var(--composer-card-color, var(--chat-composer-glass-surface));
   }
 }
 
