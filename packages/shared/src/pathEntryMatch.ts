@@ -46,10 +46,22 @@ export interface TextRange {
 /**
  * The characters of `name` that `scoreEntryName` matched `query` on, for emphasising them: the
  * run it ranked by (a prefix, else a word start, else the first occurrence), or else each letter
- * of a left-to-right subsequence. Empty when the query does not match.
+ * of a left-to-right subsequence. Like the score, it reads the name as stored and then composed,
+ * so an accented name stored decomposed is emphasised too. Empty when the query does not match.
  */
 export function entryNameMatchRanges(name: string, query: string): ReadonlyArray<TextRange> {
   if (query.length === 0) return [];
+  const asStored = matchRanges(name, query);
+  if (asStored.length > 0) return asStored;
+  const composed = composeByCluster(name);
+  if (composed === null) return [];
+  return matchRanges(composed.text, query.normalize("NFC")).map((range) => ({
+    start: composed.clusters[range.start]?.start ?? 0,
+    end: composed.clusters[range.end - 1]?.end ?? name.length,
+  }));
+}
+
+function matchRanges(name: string, query: string): ReadonlyArray<TextRange> {
   const haystack = name.toLowerCase();
   const needle = query.toLowerCase();
   // Case folding can change a string's length; indices would then point at the wrong characters.
@@ -69,6 +81,26 @@ export function entryNameMatchRanges(name: string, query: string): ReadonlyArray
     from = index + character.length;
   }
   return ranges;
+}
+
+/**
+ * `name` composed (NFC) one base-and-marks cluster at a time, with the cluster of `name` behind
+ * each composed character, so a match found in the composed text can be emphasised in the name
+ * as shown. Null when composing cluster by cluster is not composing the whole, as with Hangul
+ * jamo, which join across clusters.
+ */
+function composeByCluster(
+  name: string,
+): { readonly text: string; readonly clusters: ReadonlyArray<TextRange> } | null {
+  let text = "";
+  const clusters: Array<TextRange> = [];
+  for (const cluster of name.matchAll(/\P{M}\p{M}*|\p{M}+/gu)) {
+    const composed = cluster[0].normalize("NFC");
+    const range = { start: cluster.index, end: cluster.index + cluster[0].length };
+    for (let unit = 0; unit < composed.length; unit += 1) clusters.push(range);
+    text += composed;
+  }
+  return text === name.normalize("NFC") ? { text, clusters } : null;
 }
 
 function wordStartIndex(haystack: string, needle: string): number | null {

@@ -44,4 +44,24 @@ describe("entryNameMatchRanges", () => {
   ])("finds in %j what %j matched", (name, query, ranges) => {
     expect(entryNameMatchRanges(name, query)).toEqual(ranges);
   });
+
+  // macOS stores `é` as `e` plus a combining accent; typed text holds the one composed character.
+  const decomposed = "re\u0301sume\u0301.pdf";
+
+  it("emphasises a decomposed name's whole accented letters for a composed query", () => {
+    expect(entryNameMatchRanges(decomposed, "r\u00e9s")).toEqual([{ start: 0, end: 4 }]);
+    expect(entryNameMatchRanges(decomposed, "m\u00e9")).toEqual([{ start: 5, end: 8 }]);
+    // Scattered letters: each range covers its letter's accent.
+    expect(entryNameMatchRanges(decomposed, "\u00e9\u00e9")).toEqual([
+      { start: 1, end: 3 },
+      { start: 6, end: 8 },
+    ]);
+  });
+
+  it("still reads the name as stored first", () => {
+    expect(entryNameMatchRanges(decomposed, "re")).toEqual([{ start: 0, end: 2 }]);
+    expect(entryNameMatchRanges("r\u00e9sum\u00e9.pdf", "r\u00e9s")).toEqual([
+      { start: 0, end: 3 },
+    ]);
+  });
 });
