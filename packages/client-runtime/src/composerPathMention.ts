@@ -182,13 +182,16 @@ export type ComposerPathMiss =
   | "failed";
 
 /**
- * Whether an `@` query with no row to choose is ordinary text rather than a mention being typed.
- * Prose gets no menu, and Enter sends the message.
+ * Whether a settled `@` query with no row to choose is ordinary text rather than a mention being
+ * typed. Prose gets no menu, and Enter sends the message.
+ *
+ * A pending query has no reading yet, which is why `miss` cannot be `"pending"` here: until its
+ * answer lands, Enter waits and the menu follows `isComposerPathMenuHidden`.
  */
 export function isComposerPathQueryProse(
   query: string,
   quoted: boolean,
-  miss: ComposerPathMiss,
+  miss: Exclude<ComposerPathMiss, "pending">,
 ): boolean {
   const parsed = parseComposerPathQuery(query);
   // A bare word (`@sam`) is a mention only once something matches it.
@@ -197,6 +200,26 @@ export function isComposerPathQueryProse(
   if (parsed.directory.length === 0) return quoted;
   // A path that says where it starts (`~/`, `/`, `./`, `../`) is a path, found or not.
   if (ANCHORED_DIRECTORY.test(parsed.directory)) return false;
-  // A relative one is a path only if its folder exists: `@types/node` sends, an empty `docs/` browses.
-  return miss !== "no-match";
+  // A relative one is prose only once its folder is known to be missing: `@types/node` sends.
+  // An empty `docs/` browses, and a folder that could not be read is still a path, so Enter
+  // stays with the menu's error instead of sending the draft.
+  return miss === "missing-folder";
+}
+
+/**
+ * Whether the `@` menu stays out of sight for a query with no row to choose. Settled, prose hides
+ * it, but a failed lookup always shows to say so. Pending, it keeps the visibility it had for the
+ * previous query (`wasHidden`), so it neither flashes open on `@types/` nor blinks shut between
+ * `@src` and `@src/`; with no previous query it opens only for what must be a path.
+ */
+export function isComposerPathMenuHidden(
+  query: string,
+  quoted: boolean,
+  miss: ComposerPathMiss,
+  wasHidden: boolean | null,
+): boolean {
+  if (miss === "pending") {
+    return wasHidden ?? isComposerPathQueryProse(query, quoted, "missing-folder");
+  }
+  return miss !== "failed" && isComposerPathQueryProse(query, quoted, miss);
 }

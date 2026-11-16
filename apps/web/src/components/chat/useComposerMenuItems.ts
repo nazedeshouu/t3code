@@ -7,6 +7,7 @@ import {
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
 import {
+  isComposerPathMenuHidden,
   isComposerPathQueryProse,
   orderComposerMentionItems,
 } from "@t3tools/client-runtime/composerPathMention";
@@ -51,7 +52,7 @@ import {
   matchesPullRequestQuery,
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
-import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { type ComposerCommandItem, isComposerItemSelectable } from "./ComposerCommandMenu";
 import { matchComposerModelItems } from "./composerModelMentions";
 import { useComposerPathMention } from "./useComposerPathMention";
 import type { ModelEsque } from "./providerIconUtils";
@@ -470,15 +471,23 @@ export function useComposerMenuItems({
     return composerTriggerKind === "path" ? pathMention.emptyState : "No matching command.";
   })();
 
-  // Enter and the menu's visibility both turn on this one reading of a query with no rows.
+  // With no row to choose, Enter and the menu's visibility both turn on how the query reads.
+  const hasPathMenuChoice = items.some(isComposerItemSelectable);
+  const pathQuery = pathMentionTarget?.query ?? "";
+  const pathQueryQuoted = composerTrigger?.quoted === true;
   const pathQueryIsProse =
     pathMentionTarget !== null &&
-    items.length === 0 &&
-    isComposerPathQueryProse(
-      pathMentionTarget.query,
-      composerTrigger?.quoted === true,
-      pathMention.miss,
-    );
+    !hasPathMenuChoice &&
+    pathMention.miss !== "pending" &&
+    isComposerPathQueryProse(pathQuery, pathQueryQuoted, pathMention.miss);
+  // What a pending query goes by: whether the menu was hidden for the query before it.
+  const [pathMenuWasHidden, setPathMenuWasHidden] = useState<boolean | null>(null);
+  const pathMenuHidden =
+    pathMentionTarget !== null &&
+    !hasPathMenuChoice &&
+    isComposerPathMenuHidden(pathQuery, pathQueryQuoted, pathMention.miss, pathMenuWasHidden);
+  const pathMenuVisibility = pathMentionTarget === null ? null : pathMenuHidden;
+  if (pathMenuWasHidden !== pathMenuVisibility) setPathMenuWasHidden(pathMenuVisibility);
 
   return {
     items,
@@ -492,8 +501,7 @@ export function useComposerMenuItems({
       resultKey: pathMention.resultKey,
       browse: pathMention.browse,
       prose: pathQueryIsProse,
-      // Prose gets no menu, except to say that looking the word up failed.
-      hidden: pathQueryIsProse && pathMention.miss !== "failed",
+      hidden: pathMenuHidden,
     },
   };
 }

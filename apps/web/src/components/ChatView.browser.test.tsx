@@ -677,10 +677,11 @@ function browseResult({ partialPath, cwd }: BrowseInput, entries: BrowseListing)
 }
 
 /** A router on a new draft thread, ready to render. */
-async function draftRouter(name: string) {
+async function draftRouter(name: string, settings: Partial<typeof DEFAULT_CLIENT_SETTINGS> = {}) {
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+    ...settings,
   });
   const draftId = DraftId.make(`draft-${name}`);
   useComposerDraftStore
@@ -903,6 +904,97 @@ it("a scoped package name after @ is prose: no menu, and Enter sends", async () 
   expect(document.querySelector("[data-composer-command-drawer]")).toBeNull();
   await userEvent.keyboard("{Enter}");
   await expect.element(editor).toHaveTextContent("");
+});
+
+it("a folder that could not be read keeps Enter, pressed after the failure or ahead of it", async () => {
+  using _environment = installFakeEnvironment([]);
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.succeed({ entries: [], truncated: false }),
+  );
+  let releaseLocked = () => {};
+  const lockedRead = new Promise<void>((resolve) => {
+    releaseLocked = resolve;
+  });
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) => {
+    if (input.partialPath === "./") return Effect.succeed(browseResult(input, []));
+    const denied = Effect.fail(
+      new FilesystemBrowseError({
+        partialPath: input.partialPath,
+        failure: "read_directory_failed",
+        permissionDenied: true,
+      }),
+    );
+    return input.partialPath === "./locked/"
+      ? Effect.promise(() => lockedRead).pipe(Effect.andThen(denied))
+      : denied;
+  });
+  const { router } = await draftRouter("path-unreadable");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // The folder may well exist, so this is not prose like `@types/node`: the menu says what went
+  // wrong and Enter stays with it instead of sending the draft.
+  await userEvent.click(editor);
+  await userEvent.keyboard("review @private/");
+  await expect.element(page.getByText("No permission to read private/.").first()).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("review @private/");
+
+  // An Enter that was already waiting when the failure landed is no more a send than that one.
+  await userEvent.keyboard("{Backspace>9/}@locked/{Enter}");
+  releaseLocked();
+  await expect.element(page.getByText("No permission to read locked/.").first()).toBeVisible();
+  expect(editor.element().textContent).toBe("review @locked/");
+  expect(dispatchedCommands()).toEqual([]);
+});
+
+it("Enter on a folder found by search opens it without the menu closing in between", async () => {
+  using _environment = installFakeEnvironment([]);
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.succeed({
+      entries: [
+        { path: "depot", kind: "directory" },
+        { path: "depot/deploy.ts", kind: "file" },
+      ],
+      truncated: false,
+    }),
+  );
+  let releaseDepot = () => {};
+  const depotListed = new Promise<void>((resolve) => {
+    releaseDepot = resolve;
+  });
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) =>
+    input.partialPath === "./depot/"
+      ? Effect.promise(() => depotListed).pipe(
+          Effect.as(browseResult(input, [["deploy.ts", "file"]])),
+        )
+      : Effect.succeed(browseResult(input, [])),
+  );
+  const { router } = await draftRouter("path-search-to-folder");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const option = (name: string) => page.getByRole("option", { name, exact: true });
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  await userEvent.click(editor);
+  await userEvent.keyboard("@dep");
+  await expect.element(option("depot/")).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("@depot/");
+
+  // The folder's listing is a different lookup from the search. Until it answers, the search's
+  // rows hold the menu open, dimmed and off offer.
+  await expect.element(option("depot/")).toHaveAttribute("aria-disabled", "true");
+  releaseDepot();
+  await expect.element(option("deploy.ts")).toHaveAttribute("aria-selected", "true");
+  await expect.element(option("depot/")).not.toBeInTheDocument();
 });
 
 it("a folder too large for one listing narrows on the server as its name is typed", async () => {

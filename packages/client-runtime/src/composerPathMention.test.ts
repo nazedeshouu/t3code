@@ -5,6 +5,7 @@ import {
   composerMentionPath,
   composerPathQueryInside,
   formatComposerPathToken,
+  isComposerPathMenuHidden,
   isComposerPathQueryProse,
   matchEmphasis,
   orderComposerMentionItems,
@@ -237,23 +238,48 @@ describe("isComposerPathQueryProse", () => {
     ["sam", false, "failed", true],
     ["so-called", true, "no-match", true],
     [".hidden gem", true, "no-match", true],
-    // A relative path is prose unless its folder exists.
+    // A relative path is prose only when its folder is known to be missing.
     ["types/node", false, "missing-folder", true],
-    ["effect/platform", false, "pending", true],
     ["either/or was fine", true, "missing-folder", true],
     ["docs/", false, "no-match", false],
     ["design notes/", true, "no-match", false],
     ["src/zzz", false, "no-match", false],
+    // A folder that could not be read may well exist, so its path is not prose.
+    ["src/private/", false, "failed", false],
     // A path that says where it starts is a path whatever it finds.
     ["~/nope/", false, "missing-folder", false],
     ["/nope/x", false, "missing-folder", false],
     ["./nope/", false, "missing-folder", false],
     ["../nope/", false, "failed", false],
-    ["~/Library/", true, "pending", false],
     // The project root and its dotfiles, unquoted, are always a listing.
-    ["", false, "pending", false],
+    ["", false, "no-match", false],
     [".env", false, "no-match", false],
   ] as const)("reads @%j (quoted: %j, %s) as prose: %j", (query, quoted, miss, prose) => {
     expect(isComposerPathQueryProse(query, quoted, miss)).toBe(prose);
+  });
+});
+
+describe("isComposerPathMenuHidden", () => {
+  it.each([
+    // Settled: prose hides the menu, a mention being typed keeps it.
+    ["sam", "no-match", false, true],
+    ["types/node", "missing-folder", false, true],
+    ["docs/", "no-match", true, false],
+    ["~/nope/", "missing-folder", true, false],
+    // A lookup that failed always says so, prose or not.
+    ["sam", "failed", true, false],
+    ["src/private/", "failed", true, false],
+    // Pending: the menu stays as it was for the previous query.
+    ["src/", "pending", false, false],
+    ["src", "pending", false, false],
+    ["types/", "pending", true, true],
+    ["~/Library/", "pending", true, true],
+    // Pending with no previous query: only what must be a path opens the menu.
+    ["", "pending", null, false],
+    ["~/Library/", "pending", null, false],
+    ["types/node", "pending", null, true],
+    ["sam", "pending", null, true],
+  ] as const)("@%j (%s, was hidden: %j) is hidden: %j", (query, miss, wasHidden, hidden) => {
+    expect(isComposerPathMenuHidden(query, false, miss, wasHidden)).toBe(hidden);
   });
 });

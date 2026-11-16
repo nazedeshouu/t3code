@@ -41,16 +41,16 @@ export interface ComposerPathMention {
   readonly items: ReadonlyArray<PathEntryItem>;
   /** A bare `@word`'s leading `items` that hold the word in their name; only those lead other mentions. */
   readonly closeNameMatchCount: number;
-  /** A bare `@word`'s leading `items` that match by name at all. */
+  /** The leading `items` that match by name at all: some of a bare `@word`'s, all of a folder's. */
   readonly nameMatchCount: number;
   /** Set while the query browses one directory; other `@` matches stay out then. */
   readonly browse: ComposerPathBrowse | null;
-  /** The answer to this query is still on its way; `items` are then the previous query's, if any. */
+  /** The answer to this query is still on its way; `items` are then the last answer's, all stale. */
   readonly isLoading: boolean;
   readonly emptyState: string;
   /** Why the menu has no row to choose, when it has none. */
   readonly miss: ComposerPathMiss;
-  /** Names the result `items` came from; it changes only when another result takes its place. */
+  /** Names the answer `items` came from; it changes only when another answer takes its place. */
   readonly resultKey: string;
 }
 
@@ -97,42 +97,60 @@ export function useComposerPathMention(target: PathMentionTarget | null): Compos
   const browse = useDirectoryListing(
     target !== null && parsed?.mode === "browse" ? { ...target, ...parsed } : null,
   );
-  return parsed?.mode === "search" ? search : browse;
+  const mention = parsed?.mode === "search" ? search : browse;
+
+  // Until a query is answered the menu keeps the last answer's rows, dimmed and off offer, so it
+  // holds its rows and height instead of blinking empty. One answer is kept for both sources, so
+  // a search that turns into a folder listing (`@src`, then `/`) is bridged like any other step.
+  const [answered, setAnswered] = useState<ComposerPathMention | null>(null);
+  if (target === null) {
+    // Rows bridge one open menu's queries; the next `@` starts clean.
+    if (answered !== null) setAnswered(null);
+  } else if (!mention.isLoading && !hasSameRows(answered, mention)) {
+    setAnswered(mention);
+  }
+  if (!mention.isLoading || answered === null) return mention;
+  return {
+    ...mention,
+    items: answered.items.map((item) => ({ ...item, stale: true })),
+    closeNameMatchCount: answered.closeNameMatchCount,
+    nameMatchCount: answered.nameMatchCount,
+    resultKey: answered.resultKey,
+  };
+}
+
+/** Whether two answers are one query's with the same rows; a quiet refresh can change the rows. */
+function hasSameRows(left: ComposerPathMention | null, right: ComposerPathMention): boolean {
+  return (
+    left !== null &&
+    left.resultKey === right.resultKey &&
+    left.items.length === right.items.length &&
+    left.items.every((item, index) => item.id === right.items[index]?.id)
+  );
 }
 
 /**
- * The result to show for a target: its own once it has one, and until then the last one shown,
- * so the menu holds its rows and height instead of blinking empty. A kept result is `stale` only
- * for another target; it stays its own target's answer while that query quietly refreshes.
+ * A target's own result. It is held while that same query quietly refreshes, so rows already on
+ * offer stay on offer; another target never sees it.
  */
-function useShownResult<Result, Target extends PathMentionTarget>(
-  result: Result | null,
-  target: Target | null,
-) {
-  const [kept, setKept] = useState<{ readonly result: Result; readonly target: Target } | null>(
-    null,
-  );
-  const fresh = result !== null && target !== null ? { result, target } : null;
-  if (target === null) {
-    // Rows bridge one open menu's queries; the next `@` starts clean.
-    if (kept !== null) setKept(null);
-  } else if (
-    fresh !== null &&
-    (kept?.result !== fresh.result || !samePathMentionTarget(kept.target, fresh.target))
-  ) {
-    setKept(fresh);
-  }
-  const shown = fresh ?? kept;
-  if (shown === null || target === null) return null;
-  return {
-    ...shown,
-    stale: !samePathMentionTarget(shown.target, target),
-    resultKey: JSON.stringify(shown.target),
-  };
+function useOwnResult<Result>(result: Result | null, target: PathMentionTarget | null) {
+  const [kept, setKept] = useState<{
+    readonly result: Result;
+    readonly target: PathMentionTarget;
+  } | null>(null);
+  if (target === null) return null;
+  const keptIsOwn = kept !== null && samePathMentionTarget(kept.target, target);
+  if (result === null) return keptIsOwn ? kept.result : null;
+  if (!keptIsOwn || kept.result !== result) setKept({ result, target });
+  return result;
 }
 
 function sourceOf(target: PathMentionTarget): PathMentionTarget {
   return { environmentId: target.environmentId, cwd: target.cwd, query: target.query };
+}
+
+function resultKeyOf(target: PathMentionTarget): string {
+  return JSON.stringify(sourceOf(target));
 }
 
 function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention {
@@ -141,9 +159,9 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
     cwd: target?.cwd ?? null,
     query: target?.query ?? null,
   });
-  const shown = useShownResult(search.isPending ? null : search.entries, target);
+  const entries = useOwnResult(search.isPending ? null : search.entries, target);
   if (target === null) return NOTHING;
-  const isLoading = search.isPending && (shown === null || shown.stale);
+  const isLoading = search.isPending && entries === null;
   const failed = !search.isPending && search.error !== null;
   const pending: ComposerPathMention = {
     ...NOTHING,
@@ -151,11 +169,11 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
     emptyState: failed ? SEARCH_FAILED : NO_MATCHES,
     miss: isLoading ? "pending" : failed ? "failed" : "no-match",
   };
-  if (shown === null) return pending;
+  if (entries === null) return pending;
 
-  const ranked = rankSearchMatches(shown.result, shown.target.query);
+  const ranked = rankSearchMatches(entries, target.query);
   const labels = ranked.entries.map((entry) => basenameOfPath(entry.path));
-  const emphasis = matchEmphasis(labels, shown.target.query.trim());
+  const emphasis = matchEmphasis(labels, target.query.trim());
   return {
     ...pending,
     items: ranked.entries.map((entry, index) => ({
@@ -164,15 +182,15 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
       path: entry.path,
       pathKind: entry.kind,
       opensQuery: entry.kind === "directory" ? `${entry.path}/` : null,
-      source: sourceOf(shown.target),
-      stale: shown.stale,
+      source: sourceOf(target),
+      stale: false,
       label: labels[index] ?? entry.path,
       labelMatches: emphasis[index] ?? null,
       description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
     })),
     closeNameMatchCount: ranked.closeNameMatchCount,
     nameMatchCount: ranked.nameMatchCount,
-    resultKey: shown.resultKey,
+    resultKey: resultKeyOf(target),
   };
 }
 
@@ -206,13 +224,12 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
   );
   const narrowedForFragment = debouncedFragment === target?.fragment ? narrowed.data : null;
 
-  const shown = useShownResult(narrows ? narrowedForFragment : listing.data, target);
+  const result = useOwnResult(narrows ? narrowedForFragment : listing.data, target);
   if (target === null) return NOTHING;
 
-  const answered = shown !== null && !shown.stale;
   // A listing already on screen stays the answer while it quietly refreshes.
   const isLoading =
-    !answered &&
+    result === null &&
     (fileAccess.isPending ||
       listing.isPending ||
       (narrows && (debouncedFragment !== target.fragment || narrowed.isPending)));
@@ -238,7 +255,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
       miss: "missing-folder",
     };
   }
-  if (!answered && !isLoading) {
+  if (result === null && !isLoading) {
     const failure = narrows ? narrowed.failure : listing.failure;
     if (isBrowseError(failure) && failure.pathMissing) {
       return {
@@ -256,11 +273,11 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
       miss: "failed",
     };
   }
-  if (shown === null) return unanswered;
+  if (result === null) return unanswered;
 
-  const { directory, fragment, cwd } = shown.target;
-  const source = sourceOf(shown.target);
-  const matches = rankComposerBrowseEntries(shown.result.entries, fragment);
+  const { directory, fragment, cwd } = target;
+  const source = sourceOf(target);
+  const matches = rankComposerBrowseEntries(result.entries, fragment);
   const rows = matches.slice(0, MENU_ROW_LIMIT);
   const emphasis = matchEmphasis(
     rows.map((entry) => entry.name),
@@ -269,11 +286,11 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
   const hiddenCount = matches.length - rows.length;
   // A server from before file browsing ignores the request for files and marks no entry's kind.
   const foldersOnly =
-    shown.result.entries.length > 0 &&
-    shown.result.entries.every((entry) => entry.kind === undefined);
+    result.entries.length > 0 && result.entries.every((entry) => entry.kind === undefined);
   return {
     ...unanswered,
-    resultKey: shown.resultKey,
+    resultKey: resultKeyOf(target),
+    nameMatchCount: rows.length,
     items: rows.map((entry, index) => {
       const pathKind = entry.kind ?? "directory";
       return {
@@ -284,7 +301,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
         opensQuery:
           pathKind === "directory" ? composerPathQueryInside(directory, entry.name) : null,
         source,
-        stale: shown.stale,
+        stale: false,
         label: entry.name,
         labelMatches: emphasis[index] ?? null,
         description: "",
@@ -292,12 +309,12 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
     }),
     browse: {
       currentFolder:
-        shown.stale || directory.length === 0
+        directory.length === 0
           ? null
           : {
-              id: `path-entry:current:${shown.result.parentPath}`,
+              id: `path-entry:current:${result.parentPath}`,
               type: "path-entry",
-              path: composerMentionPath(shown.result.parentPath, cwd),
+              path: composerMentionPath(result.parentPath, cwd),
               pathKind: "directory",
               opensQuery: null,
               source,
@@ -306,16 +323,16 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
               labelMatches: null,
               description: "",
             },
-      spaceMentionsFolder: !shown.stale && directory.length > 0 && fragment.length === 0,
+      spaceMentionsFolder: directory.length > 0 && fragment.length === 0,
       footnote: foldersOnly
         ? "Update T3 Code on this machine to browse files here."
         : hiddenCount > 0
           ? // Past the server's cap the count is only a floor.
-            `${hiddenCount.toLocaleString()}${shown.result.truncated ? "+" : ""} more. Keep typing to narrow.`
+            `${hiddenCount.toLocaleString()}${result.truncated ? "+" : ""} more. Keep typing to narrow.`
           : null,
     },
     emptyState:
-      shown.result.entries.length === 0
+      result.entries.length === 0
         ? "This folder is empty."
         : fragment.length === 0
           ? "Only hidden files here. Type . to list them."
