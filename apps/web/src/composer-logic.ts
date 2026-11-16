@@ -30,6 +30,8 @@ export interface ComposerTrigger {
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  /** A path query typed as `@"…`, which runs on through spaces until its closing quote. */
+  quoted?: true;
 }
 
 export function isPathSuggestionCurrent(
@@ -268,15 +270,20 @@ function openQuotedMentionStart(text: string, cursor: number): number {
   return text.slice(start + 2, cursor).includes('"') ? -1 : start;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  options?: { readonly quotedPaths?: boolean },
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
-  const quotedStart = openQuotedMentionStart(text, cursor);
+  const quotedStart = options?.quotedPaths ? openQuotedMentionStart(text, cursor) : -1;
   if (quotedStart >= 0) {
     return {
       kind: "path",
       query: text.slice(quotedStart + 2, cursor),
       rangeStart: quotedStart,
       rangeEnd: cursor,
+      quoted: true,
     };
   }
   const tokenStart = tokenStartForCursor(text, cursor);

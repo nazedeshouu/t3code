@@ -2,10 +2,10 @@ import {
   composerBrowsePartialPath,
   composerMentionPath,
   composerPathQueryInside,
-  matchedTextRanges,
-  orderSearchMatchesByName,
+  matchEmphasis,
   parseComposerPathQuery,
   rankComposerBrowseEntries,
+  rankSearchMatches,
 } from "@t3tools/client-runtime/composerPathMention";
 import { FilesystemBrowseError, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -17,23 +17,10 @@ import { useEnvironmentQuery } from "~/state/query";
 import { useComposerPathSearch, useDebouncedValue } from "~/state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 
-type PathEntryItem = Extract<ComposerCommandItem, { type: "path-entry" }>;
+export type PathEntryItem = Extract<ComposerCommandItem, { type: "path-entry" }>;
 
-export interface ComposerPathMention {
-  readonly items: ReadonlyArray<PathEntryItem>;
-  /** Browsing one directory rather than searching the project; other `@` matches stay out. */
-  readonly isBrowsing: boolean;
-  /** The directory being browsed, as an item that mentions the directory itself. */
-  readonly currentFolder: PathEntryItem | null;
-  /** Nothing is typed after the folder's slash yet, so a Space there mentions the folder. */
-  readonly spaceMentionsFolder: boolean;
-  /** Matches left out of `items` because the menu caps its rows. */
-  readonly hiddenCount: number;
-  readonly isLoading: boolean;
-  readonly emptyState: string;
-}
-
-interface PathMentionTarget {
+/** What an `@` query is asked of: a machine, the thread's directory on it, and the typed text. */
+export interface PathMentionTarget {
   readonly environmentId: EnvironmentId;
   /** The thread's project or worktree directory; null when it has none. */
   readonly cwd: string | null;
@@ -41,10 +28,57 @@ interface PathMentionTarget {
   readonly query: string;
 }
 
+export function samePathMentionTarget(left: PathMentionTarget, right: PathMentionTarget): boolean {
+  return (
+    left.environmentId === right.environmentId &&
+    left.cwd === right.cwd &&
+    left.query === right.query
+  );
+}
+
+export interface ComposerPathMention {
+  readonly items: ReadonlyArray<PathEntryItem>;
+  /** How many leading `items` match by name; a bare `@word` lets only those lead other mentions. */
+  readonly nameMatchCount: number;
+  /** Set while the query browses one directory; other `@` matches stay out then. */
+  readonly browse: ComposerPathBrowse | null;
+  readonly isLoading: boolean;
+  readonly emptyState: string;
+  /** Nothing more is on its way for this query: `items` answer it, or it came back empty or failed. */
+  readonly settled: boolean;
+  /** Names the result `items` came from; it changes only when another result takes its place. */
+  readonly resultKey: string;
+}
+
+export interface ComposerPathBrowse {
+  /** The directory being browsed, as an item that mentions the directory itself. */
+  readonly currentFolder: PathEntryItem | null;
+  /** Nothing is typed after the folder's slash yet, so a Space there mentions the folder. */
+  readonly spaceMentionsFolder: boolean;
+  /** A line under the rows: matches the menu left out, or why files are missing. */
+  readonly footnote: string | null;
+}
+
 const MENU_ROW_LIMIT = 80;
 const NARROWING_DEBOUNCE_MS = 120;
 const NO_MATCHES = "No matching files or folders.";
 const isBrowseError = Schema.is(FilesystemBrowseError);
+
+const NOTHING: ComposerPathMention = {
+  items: [],
+  nameMatchCount: 0,
+  browse: null,
+  isLoading: false,
+  emptyState: NO_MATCHES,
+  settled: true,
+  resultKey: "",
+};
+
+const NO_FOLDER: ComposerPathBrowse = {
+  currentFolder: null,
+  spaceMentionsFolder: false,
+  footnote: null,
+};
 
 /**
  * File and folder suggestions for the composer's `@` query: a project-wide name search for a bare
@@ -53,81 +87,80 @@ const isBrowseError = Schema.is(FilesystemBrowseError);
  */
 export function useComposerPathMention(target: PathMentionTarget | null): ComposerPathMention {
   const parsed = target === null ? null : parseComposerPathQuery(target.query);
-  const search = useProjectSearch(
-    target !== null && parsed?.mode === "search"
-      ? { environmentId: target.environmentId, cwd: target.cwd, query: parsed.query }
-      : null,
-  );
+  const search = useProjectSearch(parsed?.mode === "search" ? target : null);
   const browse = useDirectoryListing(
-    target !== null && parsed?.mode === "browse"
-      ? { environmentId: target.environmentId, cwd: target.cwd, ...parsed }
-      : null,
+    target !== null && parsed?.mode === "browse" ? { ...target, ...parsed } : null,
   );
   return parsed?.mode === "search" ? search : browse;
 }
 
-const NOTHING: ComposerPathMention = {
-  items: [],
-  isBrowsing: false,
-  currentFolder: null,
-  spaceMentionsFolder: false,
-  hiddenCount: 0,
-  isLoading: false,
-  emptyState: NO_MATCHES,
-};
-
 /**
- * The newest settled result, kept through the load of the next one so the menu holds its rows
- * and height instead of blinking empty. `key` names the request the kept result answered.
+ * The result to show for a target: its own once it has one, and until then the last one shown,
+ * so the menu holds its rows and height instead of blinking empty. A kept result still belongs
+ * to the target it answered, which `stale` and every row built from it carry.
  */
-function useLastSettled<Result>(result: Result | null, key: string) {
-  const [last, setLast] = useState<{ readonly result: Result; readonly key: string } | null>(null);
-  if (result !== null && last?.result !== result) {
-    setLast({ result, key });
+function useShownResult<Result, Target extends PathMentionTarget>(
+  result: Result | null,
+  target: Target | null,
+) {
+  const [kept, setKept] = useState<{ readonly result: Result; readonly target: Target } | null>(
+    null,
+  );
+  const fresh = result !== null && target !== null ? { result, target } : null;
+  if (target === null) {
+    // Rows bridge one open menu's queries; the next `@` starts clean.
+    if (kept !== null) setKept(null);
+  } else if (
+    fresh !== null &&
+    (kept?.result !== fresh.result || !samePathMentionTarget(kept.target, fresh.target))
+  ) {
+    setKept(fresh);
   }
-  return result === null ? last : { result, key };
+  const shown = fresh ?? kept;
+  return shown === null
+    ? null
+    : { ...shown, stale: fresh === null, resultKey: JSON.stringify(shown.target) };
 }
 
-function useProjectSearch(
-  target: {
-    readonly environmentId: EnvironmentId;
-    readonly cwd: string | null;
-    readonly query: string;
-  } | null,
-): ComposerPathMention {
+function sourceOf(target: PathMentionTarget): PathMentionTarget {
+  return { environmentId: target.environmentId, cwd: target.cwd, query: target.query };
+}
+
+function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention {
   const search = useComposerPathSearch({
     environmentId: target?.environmentId ?? null,
     cwd: target?.cwd ?? null,
     query: target?.query ?? null,
   });
-  const shown = useLastSettled(search.isPending ? null : search.entries, target?.query ?? "");
+  const shown = useShownResult(search.isPending ? null : search.entries, target);
   if (target === null) return NOTHING;
+  const pending = { ...NOTHING, isLoading: search.isPending, settled: !search.isPending };
+  if (shown === null) return pending;
 
-  const stale = shown?.key !== target.query;
+  const ranked = rankSearchMatches(shown.result, shown.target.query);
+  const labels = ranked.entries.map((entry) => basenameOfPath(entry.path));
+  const emphasis = matchEmphasis(labels, shown.target.query.trim());
   return {
-    ...NOTHING,
-    items: orderSearchMatchesByName(shown?.result ?? [], stale ? "" : target.query).map((entry) => {
-      const label = basenameOfPath(entry.path);
-      return {
-        id: `path-entry:${entry.path}`,
-        type: "path-entry",
-        path: entry.path,
-        pathKind: entry.kind,
-        opensQuery: entry.kind === "directory" ? `${entry.path}/` : null,
-        stale,
-        label,
-        labelMatches: stale ? null : matchedTextRanges(label, target.query),
-        description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
-      };
-    }),
-    isLoading: search.isPending,
+    ...pending,
+    items: ranked.entries.map((entry, index) => ({
+      id: `path-entry:${entry.path}`,
+      type: "path-entry",
+      path: entry.path,
+      pathKind: entry.kind,
+      opensQuery: entry.kind === "directory" ? `${entry.path}/` : null,
+      source: sourceOf(shown.target),
+      stale: shown.stale,
+      label: labels[index] ?? entry.path,
+      labelMatches: emphasis[index] ?? null,
+      description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
+    })),
+    nameMatchCount: ranked.nameMatchCount,
     emptyState: search.error ?? NO_MATCHES,
+    resultKey: shown.resultKey,
   };
 }
 
-interface DirectoryTarget {
-  readonly environmentId: EnvironmentId;
-  readonly cwd: string | null;
+interface DirectoryTarget extends PathMentionTarget {
   /** The typed directory through its last `/`; empty for the project root. */
   readonly directory: string;
   readonly fragment: string;
@@ -140,92 +173,119 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
     target !== null &&
     target.cwd === null &&
     composerBrowsePartialPath(target.directory).startsWith(".");
-  const request =
+  const directoryPath =
     target !== null && fileAccess.canReadFiles && !needsProject
-      ? {
-          environmentId: target.environmentId,
-          cwd: target.cwd,
-          partialPath: composerBrowsePartialPath(target.directory),
-        }
+      ? composerBrowsePartialPath(target.directory)
       : null;
-  const listing = useEnvironmentQuery(browseAtom(request, ""));
+  const listing = useEnvironmentQuery(browseAtom(target, directoryPath));
 
-  // One listing carries a capped number of entries. Past the cap, the server filters by the
-  // typed prefix instead, so entries beyond it stay reachable.
+  // One listing carries a capped number of entries. Past the cap the server narrows by the typed
+  // fragment instead, with the matcher that ranks a whole listing here.
   const debouncedFragment = useDebouncedValue(target?.fragment ?? "", NARROWING_DEBOUNCE_MS);
-  const narrowingPrefix =
-    listing.data?.truncated === true && target !== null && target.fragment.length > 0
-      ? debouncedFragment
-      : "";
+  const narrows = listing.data?.truncated === true && target !== null && target.fragment.length > 0;
   const narrowed = useEnvironmentQuery(
-    narrowingPrefix.length > 0 ? browseAtom(request, narrowingPrefix) : null,
+    narrows && directoryPath !== null && debouncedFragment.length > 0
+      ? browseAtom(target, `${directoryPath}${debouncedFragment}`)
+      : null,
   );
+  const narrowedForFragment = debouncedFragment === target?.fragment ? narrowed.data : null;
 
-  const settled = narrowed.data ?? listing.data;
-  const shown = useLastSettled(settled, target?.directory ?? "");
-  const isLoading = fileAccess.isPending || listing.isPending || narrowed.isPending;
-  const browsing = { ...NOTHING, isBrowsing: true, isLoading };
-
+  const shown = useShownResult(narrows ? narrowedForFragment : listing.data, target);
   if (target === null) return NOTHING;
+
+  const answered = shown !== null && !shown.stale;
+  // A listing already on screen stays the answer while it quietly refreshes.
+  const isLoading =
+    !answered &&
+    (fileAccess.isPending ||
+      listing.isPending ||
+      (narrows && (debouncedFragment !== target.fragment || narrowed.isPending)));
+  const unanswered = { ...NOTHING, browse: NO_FOLDER, isLoading, settled: !isLoading };
+  const folderName = target.directory || "the project folder";
+
   if (!fileAccess.isPending && !fileAccess.canReadFiles) {
     return {
-      ...browsing,
+      ...unanswered,
       emptyState: fileAccess.error ?? "This connection can't read files on this machine.",
     };
   }
   if (needsProject) {
     return {
-      ...browsing,
+      ...unanswered,
       emptyState: "This thread has no project folder. Start the path with ~/ or /.",
     };
   }
-  if (settled === null && !isLoading) {
+  if (!answered && !isLoading) {
+    const failure = narrows ? narrowed.failure : listing.failure;
     return {
-      ...browsing,
-      emptyState:
-        isBrowseError(listing.failure) && listing.failure.pathMissing
+      ...unanswered,
+      emptyState: !isBrowseError(failure)
+        ? `Couldn't read ${folderName}.`
+        : failure.pathMissing
           ? `No folder at ${target.directory}`
-          : `Couldn't read ${target.directory || "the project folder"}`,
+          : failure.permissionDenied
+            ? `No permission to read ${folderName}.`
+            : `Couldn't read ${folderName}.`,
     };
   }
-  if (shown === null) return browsing;
+  if (shown === null) return unanswered;
 
-  const stale = shown.key !== target.directory;
-  const fragment = stale ? "" : target.fragment;
+  const { directory, fragment, cwd } = shown.target;
+  const source = sourceOf(shown.target);
   const matches = rankComposerBrowseEntries(shown.result.entries, fragment);
+  const rows = matches.slice(0, MENU_ROW_LIMIT);
+  const emphasis = matchEmphasis(
+    rows.map((entry) => entry.name),
+    fragment,
+  );
+  const hiddenCount = matches.length - rows.length;
+  // A server from before file browsing ignores the request for files and marks no entry's kind.
+  const foldersOnly =
+    shown.result.entries.length > 0 &&
+    shown.result.entries.every((entry) => entry.kind === undefined);
   return {
-    ...browsing,
-    items: matches.slice(0, MENU_ROW_LIMIT).map((entry) => {
+    ...unanswered,
+    resultKey: shown.resultKey,
+    items: rows.map((entry, index) => {
       const pathKind = entry.kind ?? "directory";
       return {
         id: `path-entry:${entry.fullPath}`,
         type: "path-entry",
-        path: composerMentionPath(entry.fullPath, target.cwd),
+        path: composerMentionPath(entry.fullPath, cwd),
         pathKind,
         opensQuery:
-          pathKind === "directory" ? composerPathQueryInside(shown.key, entry.name) : null,
-        stale,
+          pathKind === "directory" ? composerPathQueryInside(directory, entry.name) : null,
+        source,
+        stale: shown.stale,
         label: entry.name,
-        labelMatches: fragment.length === 0 ? null : matchedTextRanges(entry.name, fragment),
+        labelMatches: emphasis[index] ?? null,
         description: "",
       };
     }),
-    currentFolder:
-      stale || target.directory.length === 0
-        ? null
-        : {
-            id: `path-entry:current:${shown.result.parentPath}`,
-            type: "path-entry",
-            path: composerMentionPath(shown.result.parentPath, target.cwd),
-            pathKind: "directory",
-            opensQuery: null,
-            stale: false,
-            label: target.directory,
-            labelMatches: null,
-            description: "",
-          },
-    spaceMentionsFolder: !stale && target.directory.length > 0 && target.fragment.length === 0,
-    hiddenCount: Math.max(0, matches.length - MENU_ROW_LIMIT),
+    browse: {
+      currentFolder:
+        shown.stale || directory.length === 0
+          ? null
+          : {
+              id: `path-entry:current:${shown.result.parentPath}`,
+              type: "path-entry",
+              path: composerMentionPath(shown.result.parentPath, cwd),
+              pathKind: "directory",
+              opensQuery: null,
+              source,
+              stale: false,
+              label: directory,
+              labelMatches: null,
+              description: "",
+            },
+      spaceMentionsFolder: !shown.stale && directory.length > 0 && fragment.length === 0,
+      footnote: foldersOnly
+        ? "Update T3 Code on this machine to browse files here."
+        : hiddenCount > 0
+          ? // Past the server's cap the count is only a floor.
+            `${hiddenCount.toLocaleString()}${shown.result.truncated ? "+" : ""} more. Keep typing to narrow.`
+          : null,
+    },
     emptyState:
       shown.result.entries.length === 0
         ? "This folder is empty."
@@ -235,20 +295,13 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
   };
 }
 
-function browseAtom(
-  request: {
-    readonly environmentId: EnvironmentId;
-    readonly cwd: string | null;
-    readonly partialPath: string;
-  } | null,
-  prefix: string,
-) {
-  if (request === null) return null;
+function browseAtom(target: PathMentionTarget | null, partialPath: string | null) {
+  if (target === null || partialPath === null) return null;
   return filesystemEnvironment.browse({
-    environmentId: request.environmentId,
+    environmentId: target.environmentId,
     input: {
-      partialPath: `${request.partialPath}${prefix}`,
-      ...(request.cwd === null ? {} : { cwd: request.cwd }),
+      partialPath,
+      ...(target.cwd === null ? {} : { cwd: target.cwd }),
       includeFiles: true,
     },
   });

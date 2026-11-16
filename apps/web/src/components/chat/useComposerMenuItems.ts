@@ -147,11 +147,11 @@ export function useComposerMenuItems({
   }));
   // The two `@` file behaviours part here: only one of these hooks gets a target, and the other
   // stays idle and empty.
-  const pathMention = useComposerPathMention(
+  const pathMentionTarget =
     isPathTrigger && betterFileMentions
       ? { environmentId, cwd: gitCwd, query: pathTriggerQuery }
-      : null,
-  );
+      : null;
+  const pathMention = useComposerPathMention(pathMentionTarget);
   const searchesWorkspace = isPathTrigger && !betterFileMentions;
   const workspaceEntries = useComposerPathSearch({
     environmentId,
@@ -220,7 +220,7 @@ export function useComposerMenuItems({
   const items = ((): ComposerCommandItem[] => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      if (pathMention.isBrowsing) return [...pathMention.items];
+      if (pathMention.browse) return [...pathMention.items];
       const otherMentions = [
         ...matchComposerThreadItems({
           shells: environmentThreadShells,
@@ -244,7 +244,13 @@ export function useComposerMenuItems({
           query: composerTrigger.query,
         }),
       ];
-      if (betterFileMentions) return orderComposerMentionItems(pathMention.items, otherMentions);
+      if (betterFileMentions) {
+        return orderComposerMentionItems(
+          pathMention.items,
+          pathMention.nameMatchCount,
+          otherMentions,
+        );
+      }
       return [
         ...otherMentions,
         ...workspaceEntries.entries.map((entry) => ({
@@ -464,13 +470,12 @@ export function useComposerMenuItems({
     }
     return composerTriggerKind === "path" ? pathMention.emptyState : "No matching command.";
   })();
-  const pathBrowse = pathMention.isBrowsing
-    ? {
-        currentFolder: pathMention.currentFolder,
-        spaceMentionsFolder: pathMention.spaceMentionsFolder,
-        hiddenCount: pathMention.hiddenCount,
-      }
-    : null;
 
-  return { items, isLoading, emptyState, pathBrowse };
+  return {
+    items,
+    isLoading,
+    emptyState,
+    /** The Labs `@` path menu behind `items`; its target is null whenever that menu is not up. */
+    pathMenu: { ...pathMention, target: pathMentionTarget },
+  };
 }

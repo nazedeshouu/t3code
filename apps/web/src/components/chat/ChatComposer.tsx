@@ -55,6 +55,8 @@ import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { parseSideChatCommand, serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { formatComposerPathToken } from "@t3tools/client-runtime/composerPathMention";
+import { pathQueryMayBeProse, useComposerPathKeys } from "./useComposerPathKeys";
+import { samePathMentionTarget } from "./useComposerPathMention";
 import { nazeLabEnabled } from "../../nazeLabs";
 import { type FolderDropTarget, folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { splitTransferredFiles } from "./workspaceFileDrop";
@@ -205,6 +207,7 @@ import {
   type ComposerCommandItem,
   ComposerCommandMenu,
   composerSuggestionOptionId,
+  isComposerItemSelectable,
 } from "./ComposerCommandMenu";
 import {
   ComposerAttachButton,
@@ -986,6 +989,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const value = isLiteralPendingAnswer ? (activePendingProgress?.customAnswer ?? prompt) : prompt;
     return collapseExpandedComposerCursor(value, value.length, isLiteralPendingAnswer);
   });
+  const betterFileMentions = nazeLabEnabled(settings, "naze-file-mentions");
+  const detectTrigger = (text: string, cursor: number) =>
+    detectComposerTrigger(text, cursor, { quotedPaths: betterFileMentions });
   const {
     trigger: composerTrigger,
     setTrigger: setComposerTrigger,
@@ -993,7 +999,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     dismissTrigger: dismissComposerTrigger,
     resetTrigger: resetComposerTrigger,
   } = useComposerTriggerState(() =>
-    isLiteralPendingAnswer ? null : detectComposerTrigger(prompt, prompt.length),
+    isLiteralPendingAnswer ? null : detectTrigger(prompt, prompt.length),
   );
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   const composerSuggestionId = useId();
@@ -1037,7 +1043,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
   const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
-  const composerSpaceItemRef = useRef<ComposerCommandItem | null>(null);
   const composerBlurFrameRef = useRef<number | null>(null);
   const mobileComposerExpandFrameRef = useRef<number | null>(null);
   const mobileComposerExpandReleaseFrameRef = useRef<number | null>(null);
@@ -1125,7 +1130,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     items: composerMenuItems,
     isLoading: isComposerMenuLoading,
     emptyState: composerMenuEmptyState,
-    pathBrowse: composerPathBrowse,
+    pathMenu: composerPathMenu,
   } = useComposerMenuItems({
     composerTrigger,
     environmentId,
@@ -1147,16 +1152,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     workspaceSkillsScanning,
     questionAttachmentTarget,
     modelMentions: { instanceEntries: providerInstanceEntries, modelOptionsByInstance },
-    betterFileMentions: nazeLabEnabled(settings, "naze-file-mentions"),
+    betterFileMentions,
   });
 
-  const composerMenuOpen = Boolean(composerTrigger);
+  const composerMenuOpen =
+    composerTrigger !== null &&
+    !(
+      composerMenuItems.length === 0 &&
+      composerPathMenu.target !== null &&
+      pathQueryMayBeProse(composerTrigger.query, composerTrigger.quoted === true)
+    );
   const composerMenuSearchKey = composerTrigger
-    ? // Results landing count as a new search, so the highlight returns to the best match.
-      `${composerSuggestionListId}:${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}:${isComposerMenuLoading ? "loading" : "ready"}`
+    ? // Another path result taking over counts as a new search: the highlight returns to the top.
+      `${composerSuggestionListId}:${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}:${composerPathMenu.resultKey}`
     : null;
   const activeComposerMenuItemId = resolveComposerMenuActiveItemId({
-    items: composerMenuItems,
+    items: composerMenuItems.filter(isComposerItemSelectable),
     highlightedItemId: composerHighlightedItemId,
     currentSearchKey: composerMenuSearchKey,
     highlightedSearchKey: composerHighlightedSearchKey,
@@ -1169,9 +1180,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerMenuOpenRef.current = composerMenuOpen;
     composerMenuItemsRef.current = composerMenuItems;
     activeComposerMenuItemRef.current = activeComposerMenuItem;
-    composerSpaceItemRef.current = composerPathBrowse?.spaceMentionsFolder
-      ? composerPathBrowse.currentFolder
-      : null;
   });
 
   const isComposerApprovalState = activePendingApproval !== null;
@@ -1208,7 +1216,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setComposerDraftPrompt(composerDraftTarget, nextPrompt);
     const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
     setComposerCursor(nextCursor);
-    setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
+    setComposerTrigger(detectTrigger(nextPrompt, nextPrompt.length));
     scheduleComposerFocus();
   };
   const editPromptFromTraitsStable = useStableCallback(editPromptFromTraits);
@@ -1592,7 +1600,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
       setComposerCursor(nextCursor);
       setComposerTrigger(
-        cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
+        cursorAdjacentToMention ? null : detectTrigger(nextPrompt, expandedCursor),
       );
       onChangeActivePendingUserInputCustomAnswer(
         activePendingProgress.activeQuestion.id,
@@ -1714,9 +1722,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       addComposerDraftFiles(attachmentDraftTarget, attachmentChanges.filesToRestore);
     }
     setComposerCursor(nextCursor);
-    setComposerTrigger(
-      cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
-    );
+    setComposerTrigger(cursorAdjacentToMention ? null : detectTrigger(nextPrompt, expandedCursor));
   };
   const onPromptChangeStable = useStableCallback(onPromptChange);
 
@@ -1786,7 +1792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     setComposerCursor(nextCursor);
     setComposerTrigger(
-      isLiteralPendingAnswer ? null : detectComposerTrigger(next.text, nextExpandedCursor),
+      isLiteralPendingAnswer ? null : detectTrigger(next.text, nextExpandedCursor),
     );
     if (options?.focusEditorAfterReplace !== false) {
       window.requestAnimationFrame(() => {
@@ -1892,17 +1898,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       snapshot,
       trigger: isLiteralPendingAnswer
         ? null
-        : resolveComposerTrigger(detectComposerTrigger(snapshot.value, snapshot.expandedCursor)),
+        : resolveComposerTrigger(detectTrigger(snapshot.value, snapshot.expandedCursor)),
     };
   };
 
   const { onUsageLimitsCommand } = props;
-  const onSelectComposerItem = (item: ComposerCommandItem) => {
-    if (composerSelectLockRef.current) return;
-    composerSelectLockRef.current = true;
-    window.requestAnimationFrame(() => {
-      composerSelectLockRef.current = false;
-    });
+  const selectComposerItem = (item: ComposerCommandItem) => {
     const { snapshot, trigger } = resolveActiveComposerTrigger();
     if (!trigger) return;
     if (item.type === "path") {
@@ -1922,7 +1923,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
     if (item.type === "path-entry") {
-      if (trigger.kind !== "path" || item.stale) return;
+      // A row answers one query on one machine and directory. The composer may have moved on
+      // since it rendered, and then the row's path is not the one being asked for.
+      const asked = { environmentId, cwd: gitCwd, query: trigger.query };
+      if (trigger.kind !== "path" || !samePathMentionTarget(item.source, asked)) return;
       // A folder opens in place, leaving the query live so the menu lists its entries.
       const replacement =
         item.opensQuery === null
@@ -2114,7 +2118,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
   };
+  const onSelectComposerItem = (item: ComposerCommandItem) => {
+    if (composerSelectLockRef.current) return;
+    composerSelectLockRef.current = true;
+    window.requestAnimationFrame(() => {
+      composerSelectLockRef.current = false;
+    });
+    selectComposerItem(item);
+  };
   const onSelectComposerItemStable = useStableCallback(onSelectComposerItem);
+  const onPathMenuKey = useComposerPathKeys({
+    menu: {
+      target: composerPathMenu.target,
+      settled: composerPathMenu.settled,
+      item: activeComposerMenuItem ?? composerMenuItems[0] ?? null,
+      folder: composerPathMenu.browse?.spaceMentionsFolder
+        ? composerPathMenu.browse.currentFolder
+        : null,
+    },
+    readLiveQuery: () => {
+      const { trigger } = resolveActiveComposerTrigger();
+      return betterFileMentions && trigger?.kind === "path"
+        ? { environmentId, cwd: gitCwd, query: trigger.query, quoted: trigger.quoted === true }
+        : null;
+    },
+    // A key that waited for its rows runs outside the click-and-key lock's frame.
+    select: selectComposerItem,
+    typeSpace: () => {
+      const { trigger } = resolveActiveComposerTrigger();
+      if (trigger) applyPromptReplacement(trigger.rangeEnd, trigger.rangeEnd, " ");
+    },
+  });
 
   const onComposerMenuItemHighlighted = (itemId: string | null) => {
     setComposerHighlightedItemId(itemId);
@@ -2386,7 +2420,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerMenuOpenRef,
       composerMenuItemsRef,
       activeComposerMenuItemRef,
-      composerSpaceItemRef,
+      onPathMenuKey,
       setComposerDraftPrompt,
       setComposerDraftThreadContexts,
       setComposerDraftEnvironmentContexts,
@@ -3173,10 +3207,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setComposerCursor(cursor);
         resetComposerTrigger(
           options?.detectTrigger && !isLiteralPendingAnswer
-            ? detectComposerTrigger(
-                promptForState,
-                expandCollapsedComposerCursor(promptForState, cursor),
-              )
+            ? detectTrigger(promptForState, expandCollapsedComposerCursor(promptForState, cursor))
             : null,
         );
       },
@@ -3217,7 +3248,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (!inserted) return;
         promptRef.current = insertion.prompt;
         setComposerCursor(nextCollapsedCursor);
-        setComposerTrigger(detectComposerTrigger(insertion.prompt, insertion.cursor));
+        setComposerTrigger(detectTrigger(insertion.prompt, insertion.cursor));
         window.requestAnimationFrame(() => {
           composerEditorRef.current?.focusAt(nextCollapsedCursor);
         });
@@ -3584,7 +3615,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               )}
 
               <div role="status" aria-atomic="true" className="sr-only">
-                {composerSuggestionsVisible && composerMenuItems.length === 0
+                {composerSuggestionsVisible &&
+                (composerMenuItems.length === 0 || !composerPathMenu.settled)
                   ? isComposerMenuLoading
                     ? composerTriggerKind === "pull-request"
                       ? "Finding pull request..."
@@ -3603,7 +3635,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isLoading={isComposerMenuLoading}
                     triggerKind={composerTriggerKind}
                     emptyStateText={composerMenuEmptyState}
-                    pathBrowse={composerPathBrowse}
+                    pathBrowse={composerPathMenu.browse}
                     activeItemId={activeComposerMenuItem?.id ?? null}
                     onHighlightedItemChange={onComposerMenuItemHighlightedStable}
                     onSelect={onSelectComposerItemStable}

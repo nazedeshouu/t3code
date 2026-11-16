@@ -1,6 +1,10 @@
 import type { FilesystemBrowseEntry } from "@t3tools/contracts";
-
-import { filterFilesystemBrowseEntries } from "./state/filesystem.ts";
+import {
+  rankPathEntries,
+  scoreEntryName,
+  SUBSEQUENCE_MATCH_SCORE,
+} from "@t3tools/shared/pathEntryMatch";
+import { scoreSubsequenceMatch } from "@t3tools/shared/searchRanking";
 
 /**
  * The text after `@` in the composer, read the way a shell reads a path being typed.
@@ -75,36 +79,42 @@ export function composerMentionPath(fullPath: string, cwd: string | null): strin
 }
 
 /**
- * A browsed directory's entries narrowed to the fragment typed inside it: directories first,
- * closest name match first, dotfiles only for a fragment that starts with a dot. A dot fragment
- * also keeps plain names out, so `@.` lists the dotfiles rather than every `name.ext`.
+ * A browsed directory's entries for the fragment typed inside it. With nothing typed, folders
+ * lead; a typed fragment orders folders and files together by how closely their names match.
+ * An entry without a kind comes from a server that lists folders only.
  */
 export function rankComposerBrowseEntries(
   entries: ReadonlyArray<FilesystemBrowseEntry>,
   fragment: string,
 ): ReadonlyArray<FilesystemBrowseEntry> {
-  const { visibleEntries } = filterFilesystemBrowseEntries(entries, fragment);
-  return fragment.startsWith(".")
-    ? visibleEntries.filter((entry) => entry.name.startsWith("."))
-    : visibleEntries;
+  const ranked = rankPathEntries(entries, fragment);
+  if (fragment.length > 0) return ranked;
+  return ranked.sort((left, right) => Number(left.kind === "file") - Number(right.kind === "file"));
 }
 
 /**
- * Project search matches reordered so a hit in the entry's own name outranks one scattered along
- * its path: a name starting with the query, then a name containing it, then the rest. The
- * search's order holds within each group.
+ * Project search results for a bare `@word`, strongest first: entries whose own name holds the
+ * word (`nameMatchCount` of them), then names matching it loosely, then matches along the path.
+ * The search's order holds within each group. The server's search is looser still, so entries
+ * matching neither way are dropped unless they are all there is.
  */
-export function orderSearchMatchesByName<Entry extends { readonly path: string }>(
+export function rankSearchMatches<Entry extends { readonly path: string }>(
   entries: ReadonlyArray<Entry>,
   query: string,
-): ReadonlyArray<Entry> {
+): { readonly entries: ReadonlyArray<Entry>; readonly nameMatchCount: number } {
   const needle = query.trim().toLowerCase();
-  if (needle.length === 0) return entries;
-  const group = (entry: Entry) => {
-    const name = entry.path.slice(entry.path.lastIndexOf("/") + 1).toLowerCase();
-    return name.startsWith(needle) ? 0 : name.includes(needle) ? 1 : 2;
-  };
-  return [...entries].sort((left, right) => group(left) - group(right));
+  if (needle.length === 0) return { entries, nameMatchCount: 0 };
+  const groups: [Array<Entry>, Array<Entry>, Array<Entry>] = [[], [], []];
+  for (const entry of entries) {
+    const path = entry.path.toLowerCase();
+    const nameScore = scoreEntryName(path.slice(path.lastIndexOf("/") + 1), needle);
+    if (nameScore !== null) groups[nameScore < SUBSEQUENCE_MATCH_SCORE ? 0 : 1].push(entry);
+    else if (scoreSubsequenceMatch(path, needle) !== null) groups[2].push(entry);
+  }
+  const matched = groups.flat();
+  return matched.length === 0
+    ? { entries, nameMatchCount: 0 }
+    : { entries: matched, nameMatchCount: groups[0].length };
 }
 
 export interface TextRange {
@@ -141,15 +151,34 @@ export function matchedTextRanges(text: string, query: string): ReadonlyArray<Te
 }
 
 /**
+ * Per-label emphasis for a menu's rows, or null for a row left plain. When every row matches the
+ * same way, by starting with the query, emphasis would only dim the rest of each name, so the
+ * whole list stays plain.
+ */
+export function matchEmphasis(
+  labels: ReadonlyArray<string>,
+  query: string,
+): ReadonlyArray<ReadonlyArray<TextRange> | null> {
+  const ranges = labels.map((label) => matchedTextRanges(label, query));
+  const onlyPrefixes = ranges.every(
+    (labelRanges) =>
+      labelRanges.length === 0 || (labelRanges.length === 1 && labelRanges[0]?.start === 0),
+  );
+  return onlyPrefixes ? labels.map(() => null) : ranges;
+}
+
+/**
  * Menu order when a bare `@word` matches files and other things (threads, machines, models):
- * the best few files stay on top, the other matches follow while they are still in view, then
- * the remaining files.
+ * the first few files whose name matches lead, the other matches follow while they are still in
+ * view, then the remaining files. `files` are ranked with `nameMatchCount` name matches first.
  */
 export function orderComposerMentionItems<File, Other>(
   files: ReadonlyArray<File>,
+  nameMatchCount: number,
   others: ReadonlyArray<Other>,
 ): Array<File | Other> {
-  return [...files.slice(0, LEADING_FILE_MATCHES), ...others, ...files.slice(LEADING_FILE_MATCHES)];
+  const leading = Math.min(nameMatchCount, LEADING_FILE_MATCHES);
+  return [...files.slice(0, leading), ...others, ...files.slice(leading)];
 }
 
 const LEADING_FILE_MATCHES = 4;

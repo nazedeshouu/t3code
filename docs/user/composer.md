@@ -351,7 +351,8 @@ With **Settings → Labs → Better @ file mentions** on, a path after `@` brows
 instead: `@src/` lists what is in `src`, `@~/` starts from your home folder on the thread's
 machine, and `@/` from its root. Enter or Tab on a folder opens it, and on a file inserts the
 mention. To mention the folder you are in, press Space right after its `/`. A name with spaces
-is written as `@"my folder/`, which the menu does for you.
+is written as `@"my folder/`, which the menu does for you. While a path's menu is open, Enter
+belongs to it even when the folder has nothing to choose; press Esc first to send.
 
 A pull request appears as its icon and number. Its color reflects whether it was open, draft,
 merged, or closed when it was attached. Select it to inspect the captured title and branches,

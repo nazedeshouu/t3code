@@ -2,6 +2,7 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
+  FilesystemBrowseError,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
@@ -663,41 +664,48 @@ it("selecting a side-chat tab focuses that side chat's composer", async () => {
   await expect.element(mainEditor).toHaveTextContent("main draft");
 });
 
-it("@ browses folders from the keyboard: Enter opens one, Enter on a file mentions it", async () => {
-  using _environment = installFakeEnvironment([]);
+type BrowseInput = { readonly partialPath: string; readonly cwd: string };
+type BrowseListing = ReadonlyArray<readonly [name: string, kind: "file" | "directory"]>;
+
+/** What `filesystem.browse` returns for a project-relative directory holding `entries`. */
+function browseResult({ partialPath, cwd }: BrowseInput, entries: BrowseListing) {
+  const parentPath = `${cwd}/${partialPath.slice(2)}`.replace(/\/$/, "");
+  return {
+    parentPath,
+    entries: entries.map(([name, kind]) => ({ name, fullPath: `${parentPath}/${name}`, kind })),
+  };
+}
+
+/** A router on a new draft thread, ready to render. */
+async function draftRouter(name: string) {
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
   });
-  const listings: Record<string, ReadonlyArray<readonly [string, "file" | "directory"]>> = {
+  const draftId = DraftId.make(`draft-${name}`);
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make(`thread-${name}`),
+    });
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  return { router, draftId };
+}
+
+it("@ browses folders from the keyboard: Enter opens one, Enter on a file mentions it", async () => {
+  using _environment = installFakeEnvironment([]);
+  const listings: Record<string, BrowseListing> = {
     "./": [
       ["src", "directory"],
       ["README.md", "file"],
     ],
     "./src/": Array.from({ length: 30 }, (_, index) => [`module${index}.ts`, "file"] as const),
   };
-  using _browse = answerRpc(
-    WS_METHODS.filesystemBrowse,
-    ({ partialPath }: { partialPath: string }) => {
-      const parentPath = `/workspace/render/${partialPath.slice(2)}`.replace(/\/$/, "");
-      return Effect.succeed({
-        parentPath,
-        entries: (listings[partialPath] ?? []).map(([name, kind]) => ({
-          name,
-          fullPath: `${parentPath}/${name}`,
-          kind,
-        })),
-      });
-    },
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) =>
+    Effect.succeed(browseResult(input, listings[input.partialPath] ?? [])),
   );
-  const draftId = DraftId.make("draft-path-mention");
-  useComposerDraftStore
-    .getState()
-    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
-      threadId: ThreadId.make("thread-path-mention"),
-    });
-  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
-  await router.load();
+  const { router, draftId } = await draftRouter("path-mention");
   await using _app = await render(<AppRoot router={router} />, {
     // AppRoot brings its own router.
     router: false,
@@ -747,4 +755,77 @@ it("@ browses folders from the keyboard: Enter opens one, Enter on a file mentio
   await expect.element(option("module0.ts")).toBeVisible();
   await userEvent.keyboard(" ");
   await expect.element(page.getByRole("button", { name: "Preview src" })).toBeVisible();
+});
+
+it("a key pressed before the @ rows land runs when they do, and an empty folder never sends", async () => {
+  using _environment = installFakeEnvironment([]);
+  // Listings stay cached between this file's tests, so these folders are this test's own.
+  let releaseLib = () => {};
+  const libListed = new Promise<void>((resolve) => {
+    releaseLib = resolve;
+  });
+  const listings: Record<string, BrowseListing> = {
+    "./": [
+      ["lib", "directory"],
+      ["vacant", "directory"],
+    ],
+    "./lib/": [
+      ["components", "directory"],
+      ["index.ts", "file"],
+    ],
+    "./lib/components/": [["Button.tsx", "file"]],
+    "./vacant/": [],
+  };
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) => {
+    const listing = listings[input.partialPath];
+    if (listing === undefined) {
+      return Effect.fail(
+        new FilesystemBrowseError({
+          partialPath: input.partialPath,
+          failure: "read_directory_failed",
+          pathMissing: true,
+        }),
+      );
+    }
+    const result = Effect.succeed(browseResult(input, listing));
+    return input.partialPath === "./lib/"
+      ? Effect.promise(() => libListed).pipe(Effect.andThen(result))
+      : result;
+  });
+  const { router } = await draftRouter("path-keys");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const option = (name: string) => page.getByRole("option", { name, exact: true });
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  await userEvent.click(editor);
+  await userEvent.keyboard("@");
+  await expect.element(option("lib/")).toHaveAttribute("aria-selected", "true");
+  // The first Enter opens lib/. Its listing is held, so the second meets last query's rows,
+  // which are shown but not on offer.
+  await userEvent.keyboard("{Enter}");
+  await expect.element(option("lib/")).toHaveAttribute("aria-disabled", "true");
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("@lib/");
+  releaseLib();
+  // Once lib/ lists, the waiting Enter opens its first folder.
+  await expect.element(option("Button.tsx")).toHaveAttribute("aria-selected", "true");
+  expect(editor.element().textContent).toBe("@lib/components/");
+
+  // With nothing to choose, Enter and Tab stay with the menu rather than sending the prompt.
+  await userEvent.keyboard("{Backspace>16/}@vacant/");
+  await expect.element(page.getByText("This folder is empty.").first()).toBeVisible();
+  await userEvent.keyboard("{Enter}{Tab}");
+  await userEvent.keyboard("{Backspace>7/}missing/");
+  await expect.element(page.getByText("No folder at missing/").first()).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("@missing/");
+  expect(dispatchedCommands()).toEqual([]);
+
+  // Escape hands Enter back to sending.
+  await userEvent.keyboard("{Escape}{Enter}");
+  await expect.element(editor).toHaveTextContent("");
 });

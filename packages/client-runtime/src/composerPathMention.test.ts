@@ -5,11 +5,12 @@ import {
   composerMentionPath,
   composerPathQueryInside,
   formatComposerPathToken,
+  matchEmphasis,
   matchedTextRanges,
   orderComposerMentionItems,
-  orderSearchMatchesByName,
   parseComposerPathQuery,
   rankComposerBrowseEntries,
+  rankSearchMatches,
 } from "./composerPathMention.ts";
 
 describe("parseComposerPathQuery", () => {
@@ -88,29 +89,43 @@ describe("rankComposerBrowseEntries", () => {
     kind,
   });
   const entries = [
-    entry(".env", "file"),
+    entry(".prettierrc", "file"),
+    entry(".gitignore", "file"),
     entry(".github", "directory"),
+    entry(".git", "directory"),
+    entry(".env.example", "file"),
     entry("README.md", "file"),
     entry("my-components", "directory"),
     entry("compose.yaml", "file"),
     entry("components", "directory"),
     entry("docs", "directory"),
+    entry("notes10.md", "file"),
+    entry("notes2.md", "file"),
   ];
   const names = (fragment: string) =>
     rankComposerBrowseEntries(entries, fragment).map((candidate) => candidate.name);
 
-  it("lists folders before files and leaves dotfiles out until asked", () => {
-    expect(names("")).toEqual(["my-components", "components", "docs", "README.md", "compose.yaml"]);
+  it("lists folders before files, A to Z, and leaves dotfiles out until asked", () => {
+    expect(names("")).toEqual([
+      "components",
+      "docs",
+      "my-components",
+      "compose.yaml",
+      "notes2.md",
+      "notes10.md",
+      "README.md",
+    ]);
   });
 
-  it("puts prefix matches first, folders leading each tier, then looser matches", () => {
+  it("orders a typed fragment by match tier, then A to Z with folders and files together", () => {
     expect(names("comp")).toEqual(["components", "compose.yaml", "my-components"]);
     expect(names("cmpn")).toEqual(["components", "my-components"]);
+    expect(names("no")).toEqual(["notes2.md", "notes10.md"]);
   });
 
   it("lists only dotfiles for a fragment that starts with a dot", () => {
-    expect(names(".")).toEqual([".github", ".env"]);
-    expect(names(".e")).toEqual([".env"]);
+    expect(names(".")).toEqual([".env.example", ".git", ".github", ".gitignore", ".prettierrc"]);
+    expect(names(".e")).toEqual([".env.example", ".gitignore", ".prettierrc"]);
   });
 
   it("treats an entry without a kind, from an older server, as a folder", () => {
@@ -122,19 +137,39 @@ describe("rankComposerBrowseEntries", () => {
   });
 });
 
-describe("orderSearchMatchesByName", () => {
-  it("lifts matches in the file name above matches along the path", () => {
-    const paths = ["docs/readme/intro.md", "src/thread.ts", "README.md", "src/unrelated.ts"];
-    const ordered = orderSearchMatchesByName(
+describe("rankSearchMatches", () => {
+  const rank = (paths: ReadonlyArray<string>, query: string) => {
+    const ranked = rankSearchMatches(
       paths.map((path) => ({ path })),
-      "read",
+      query,
     );
-    expect(ordered.map((match) => match.path)).toEqual([
-      "README.md",
-      "src/thread.ts",
-      "docs/readme/intro.md",
-      "src/unrelated.ts",
-    ]);
+    return { paths: ranked.entries.map((match) => match.path), names: ranked.nameMatchCount };
+  };
+
+  it("puts name matches first, then loose and path matches, and drops the rest", () => {
+    expect(
+      rank(
+        [
+          "design/color palette.md",
+          "docs/readme/intro.md",
+          "src/thread.ts",
+          ".env.example",
+          "src/unrelated.ts",
+          "README.md",
+        ],
+        "read",
+      ),
+    ).toEqual({
+      paths: ["src/thread.ts", "README.md", "src/unrelated.ts", "docs/readme/intro.md"],
+      names: 2,
+    });
+  });
+
+  it("keeps what the search found when nothing matches by name or path", () => {
+    expect(rank(["design/typography.md", ".env.example"], "raed")).toEqual({
+      paths: ["design/typography.md", ".env.example"],
+      names: 0,
+    });
   });
 });
 
@@ -158,10 +193,26 @@ describe("matchedTextRanges", () => {
   });
 });
 
+describe("matchEmphasis", () => {
+  it("emphasises matches when rows match in different places", () => {
+    expect(matchEmphasis(["components", "my-components"], "comp")).toEqual([
+      [{ start: 0, end: 4 }],
+      [{ start: 3, end: 7 }],
+    ]);
+  });
+
+  it("leaves the list plain when every row only starts with the query", () => {
+    expect(matchEmphasis([".env", ".git"], ".")).toEqual([null, null]);
+    expect(matchEmphasis(["notes.md", "node_modules"], "no")).toEqual([null, null]);
+  });
+});
+
 describe("orderComposerMentionItems", () => {
-  it("keeps the best files on top, then other matches, then the remaining files", () => {
-    const files = ["f1", "f2", "f3", "f4", "f5", "f6"];
-    expect(orderComposerMentionItems(files, ["thread", "model"])).toEqual([
+  const files = ["f1", "f2", "f3", "f4", "f5", "f6"];
+  const others = ["thread", "model"];
+
+  it("leads with at most four name matches, then other mentions, then the remaining files", () => {
+    expect(orderComposerMentionItems(files, 6, others)).toEqual([
       "f1",
       "f2",
       "f3",
@@ -171,6 +222,14 @@ describe("orderComposerMentionItems", () => {
       "f5",
       "f6",
     ]);
-    expect(orderComposerMentionItems(files, [])).toEqual(files);
+  });
+
+  it("keeps files that match only loosely or along their path below other mentions", () => {
+    expect(orderComposerMentionItems(files, 1, others)).toEqual([
+      "f1",
+      ...others,
+      ...files.slice(1),
+    ]);
+    expect(orderComposerMentionItems(files, 0, others)).toEqual([...others, ...files]);
   });
 });

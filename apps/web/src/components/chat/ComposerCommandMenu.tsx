@@ -35,6 +35,11 @@ import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PierreEntryIcon } from "./PierreEntryIcon";
+import type {
+  ComposerPathBrowse,
+  PathEntryItem,
+  PathMentionTarget,
+} from "./useComposerPathMention";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ComposerBanner } from "./ComposerBanner";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
@@ -57,10 +62,12 @@ export type ComposerCommandItem =
       pathKind: ProjectEntry["kind"];
       /** On a folder, choosing it opens the folder by rewriting the `@` query to this. Null mentions `path`. */
       opensQuery: string | null;
-      /** Left from the previous query while the next result loads: shown, not selectable. */
+      /** The query this row answered. It is chosen only while the composer still asks exactly that. */
+      source: PathMentionTarget;
+      /** Left from the previous query while the next result loads: shown dimmed, not selectable. */
       stale: boolean;
       label: string;
-      /** The typed characters found in `label`; null when nothing was typed to match against. */
+      /** The typed characters found in `label`; null leaves the label plain. */
       labelMatches: ReadonlyArray<TextRange> | null;
       description: string;
     }
@@ -172,6 +179,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
           <CommandList
             id={props.listId}
             aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
+            aria-busy={props.isLoading}
             className="max-h-72 min-h-0 scroll-pb-6"
           >
             <CommandGroup>
@@ -188,9 +196,9 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                 />
               ))}
             </CommandGroup>
-            {props.pathBrowse && props.pathBrowse.hiddenCount > 0 ? (
+            {props.pathBrowse?.footnote ? (
               <p className="px-3 pt-1 pb-2 text-secondary-label text-xs">
-                {props.pathBrowse.hiddenCount.toLocaleString()} more. Keep typing to narrow.
+                {props.pathBrowse.footnote}
               </p>
             ) : null}
           </CommandList>
@@ -248,6 +256,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     <CommandItem
       render={<div id={props.optionId} />}
       aria-selected={props.isActive}
+      disabled={!isComposerItemSelectable(props.item)}
       value={props.item.id}
       data-composer-item-id={props.item.id}
       active={props.isActive}
@@ -297,12 +306,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
           className={cn("size-4 shrink-0", pullRequestPresentation.toneClassName)}
         />
       ) : null}
-      <span
-        className={cn(
-          "flex min-w-0 flex-1 items-center gap-2",
-          props.item.type === "path-entry" && props.item.stale && "opacity-60",
-        )}
-      >
+      <span className="flex min-w-0 flex-1 items-center gap-2">
         <span
           className={cn(
             "min-w-0 shrink-0 truncate font-sans text-xs font-medium",
@@ -345,13 +349,10 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
   );
 });
 
-export interface ComposerPathBrowse {
-  readonly currentFolder: PathEntryItem | null;
-  readonly spaceMentionsFolder: boolean;
-  readonly hiddenCount: number;
+/** A row left over from the previous `@` query waits, unselectable, for the next result. */
+export function isComposerItemSelectable(item: ComposerCommandItem): boolean {
+  return item.type !== "path-entry" || !item.stale;
 }
-
-type PathEntryItem = Extract<ComposerCommandItem, { type: "path-entry" }>;
 
 /** The folder being browsed, above its entries. Choosing it mentions the folder itself. */
 function CurrentFolderRow(props: {
