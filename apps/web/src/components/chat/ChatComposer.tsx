@@ -3443,6 +3443,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }}
       className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width)"
       data-chat-composer-form="true"
+      data-composer-suggestions-open={composerSuggestionsVisible ? "true" : undefined}
       {...threadContextDropTargetProps()}
     >
       <ComposerBanner.Dock>

@@ -3589,7 +3589,10 @@ export default function ChatView(props: ChatViewProps) {
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
                   {isDraftHeroState ? (
-                    <div className="absolute inset-x-0 bottom-full">
+                    // The suggestion menu opens upward over the headline. The headline steps
+                    // aside rather than the menu shrinking to fit under it: at short window
+                    // heights that would leave the menu a row or two.
+                    <div className="absolute inset-x-0 bottom-full transition-opacity duration-150 group-has-data-[composer-suggestions-open]/composer-stack:pointer-events-none group-has-data-[composer-suggestions-open]/composer-stack:opacity-0">
                       <div
                         className="pb-4 group-has-data-[composer-shoulder-tab]/composer-stack:pb-0"
                         style={
