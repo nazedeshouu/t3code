@@ -1119,7 +1119,7 @@ it("a held Enter that the @ menu has no use for breaks the line when Mod+Enter s
   expect(dispatchedCommands()).toEqual([]);
 });
 
-it("a Space held for a folder listing is typed where it was pressed if typing goes on", async () => {
+it("a Space held for a folder listing is typed where it was pressed, if typing goes on or the menu closes", async () => {
   using _environment = installFakeEnvironment([]);
   let releaseAtlas = () => {};
   const atlasListed = new Promise<void>((resolve) => {
@@ -1128,7 +1128,9 @@ it("a Space held for a folder listing is typed where it was pressed if typing go
   using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) =>
     input.partialPath === "./atlas/"
       ? Effect.promise(() => atlasListed).pipe(Effect.as(browseResult(input, [["and.ts", "file"]])))
-      : Effect.succeed(browseResult(input, [])),
+      : input.partialPath === "./books/"
+        ? Effect.never
+        : Effect.succeed(browseResult(input, [])),
   );
   const { router, draftId } = await draftRouter("path-held-space");
   await using _app = await render(<AppRoot router={router} />, {
@@ -1145,6 +1147,14 @@ it("a Space held for a folder listing is typed where it was pressed if typing go
   await vi.waitFor(() =>
     expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
       "@atlas/ and more",
+    ),
+  );
+
+  // Escape closes a menu whose listing never came. The Space pressed for it is typed all the same.
+  await userEvent.keyboard(" @./books/ {Escape}");
+  await vi.waitFor(() =>
+    expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+      "@atlas/ and more @./books/ ",
     ),
   );
 });

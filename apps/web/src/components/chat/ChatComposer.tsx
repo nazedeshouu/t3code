@@ -2124,6 +2124,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const onSelectComposerItemStable = useStableCallback(onSelectComposerItem);
   const onPathMenuKey = useComposerPathKeys({
+    draftKey: composerDraftTargetKey,
     menu: {
       target: composerPathMenu.target,
       settled: composerPathMenu.settled,
@@ -2415,8 +2416,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerMenuItemsRef,
       activeComposerMenuItemRef,
       onPathMenuKey,
-      setComposerDraftPrompt,
       pathMenuHidden: composerPathMenu.hidden,
+      setComposerDraftPrompt,
       setComposerDraftThreadContexts,
       setComposerDraftEnvironmentContexts,
       setComposerCursor,

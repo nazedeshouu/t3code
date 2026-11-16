@@ -272,9 +272,10 @@ export function composerCommandKeyHandler(input: {
     const replayEnterOrTab = () => {
       if (!sendOrEditList() && key === "Enter") composerEditorRef.current?.insertNewline();
     };
-    // A held Space lands where it was pressed, right after the `@` text as it then stood. The
-    // user may have typed on since (`@src/`, Space, `and`), which leaves the caret further along;
-    // if that text itself has changed, the place is gone and so is the Space.
+    // A held Space lands where it was pressed, right after the `@` text as it then stood. By
+    // then the user may have typed on (`@src/`, Space, `and`) or closed the menu, so the caret
+    // can be anywhere and only moves along if the Space lands before it. If the `@` text itself
+    // has changed, the place is gone and so is the Space.
     const heldToken = trigger
       ? readComposerSnapshot().value.slice(trigger.rangeStart, trigger.rangeEnd)
       : "";
@@ -283,7 +284,7 @@ export function composerCommandKeyHandler(input: {
       if (!trigger || caret === undefined) return;
       applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, `${heldToken} `, {
         expectedText: heldToken,
-        expandedCursorAfterReplace: caret + 1,
+        expandedCursorAfterReplace: caret < trigger.rangeEnd ? caret : caret + 1,
       });
     };
     const menuIsActive =

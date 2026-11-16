@@ -63,11 +63,13 @@ export function resolvePathMenuKey(
 
 /**
  * Keys for the `@` path menu; the handler returns whether the menu took the key. One pressed
- * ahead of its rows waits for that query's rows, then runs; if the menu has no use for it,
- * `whenUnclaimed` runs instead: what the key does outside the menu, such as sending the message.
- * Closing the menu drops a waiting key. So does typing on, except for a Space.
+ * ahead of its rows waits for them. If the menu then has no use for it, `whenUnclaimed` runs:
+ * what the key does outside the menu, such as sending. If the query changes or the menu closes
+ * first, a choice is dropped and a Space is typed after all. Neither reaches another draft.
  */
 export function useComposerPathKeys(input: {
+  /** Names the draft being edited. The composer stays mounted when the draft under it changes. */
+  readonly draftKey: string;
   readonly menu: RenderedPathMenu;
   /** The editor's current `@` query; null when the cursor is not in one. */
   readonly readLiveQuery: () => PathMentionTarget | null;
@@ -75,18 +77,19 @@ export function useComposerPathKeys(input: {
 }): (key: PathMenuKey, whenUnclaimed: () => void) => boolean {
   const latest = useRef(input);
   const waiting = useRef<{
+    readonly draftKey: string;
     readonly key: PathMenuKey;
     readonly target: PathMentionTarget;
     readonly whenUnclaimed: () => void;
   } | null>(null);
 
   const press = (key: PathMenuKey, whenUnclaimed: () => void, waited: boolean): boolean => {
-    const { menu, readLiveQuery, select } = latest.current;
+    const { draftKey, menu, readLiveQuery, select } = latest.current;
     const live = readLiveQuery();
     waiting.current = null;
     if (live === null) return false;
     const outcome = resolvePathMenuKey(key, live, menu);
-    if (outcome.type === "wait") waiting.current = { key, target: live, whenUnclaimed };
+    if (outcome.type === "wait") waiting.current = { draftKey, key, target: live, whenUnclaimed };
     if (outcome.type === "select") select(outcome.item);
     if (outcome.type === "pass" && waited) whenUnclaimed();
     return outcome.type !== "pass";
@@ -98,11 +101,13 @@ export function useComposerPathKeys(input: {
     const held = waiting.current;
     if (held === null) return;
     const { target, settled } = input.menu;
-    if (target === null || !samePathMentionTarget(target, held.target)) {
+    if (input.draftKey !== held.draftKey) {
       waiting.current = null;
-      // Typed past: a choice aimed at rows that will never show is void, but a Space is a
-      // character the user typed, and is not to be lost.
-      if (target !== null && held.key === "space") queueMicrotask(held.whenUnclaimed);
+    } else if (target === null || !samePathMentionTarget(target, held.target)) {
+      waiting.current = null;
+      // The rows this key waited for will never show. That voids a choice, but a Space is a
+      // character the user typed and is not to be lost.
+      if (held.key === "space") queueMicrotask(held.whenUnclaimed);
     } else if (settled) {
       // After the commit: the key edits the editor, which flushes its own update synchronously.
       queueMicrotask(() => {

@@ -30,8 +30,19 @@ function mountPathKeys(query: string) {
   const handler: { current: (key: PathMenuKey, whenUnclaimed: () => void) => boolean } = {
     current: () => false,
   };
-  function PathKeys({ menu }: { readonly menu: RenderedPathMenu }) {
-    const onKey = useComposerPathKeys({ menu, readLiveQuery: () => live.current, select });
+  function PathKeys({
+    menu,
+    draftKey = "draft-a",
+  }: {
+    readonly menu: RenderedPathMenu;
+    readonly draftKey?: string;
+  }) {
+    const onKey = useComposerPathKeys({
+      draftKey,
+      menu,
+      readLiveQuery: () => live.current,
+      select,
+    });
     useLayoutEffect(() => {
       handler.current = onKey;
     });
@@ -124,14 +135,41 @@ it("typing on past a held Space still types the Space, once", async () => {
   expect(keys.select).not.toHaveBeenCalled();
 });
 
-it("closing the menu drops a held Space", async () => {
+it("closing the menu still types a held Space, once", async () => {
   const keys = mountPathKeys("src/");
   const typeSpace = vi.fn();
   await using screen = await render(<keys.Menu menu={loading("src/")} />, { router: false });
   keys.press("space", typeSpace);
   await screen.rerender(<keys.Menu menu={{ ...loading("src/"), target: null }} />);
+  expect(typeSpace).toHaveBeenCalledTimes(1);
   await screen.rerender(<keys.Menu menu={{ ...loading("src/"), settled: true }} />);
+  expect(typeSpace).toHaveBeenCalledTimes(1);
+});
+
+it("a held key never runs in another draft, even one asking the same thing", async () => {
+  const keys = mountPathKeys("src/");
+  const typeSpace = vi.fn();
+  const send = vi.fn();
+  await using screen = await render(<keys.Menu menu={loading("src/")} />, { router: false });
+
+  // The composer moves to another draft, whose own `@src/` then settles, then closes.
+  keys.press("space", typeSpace);
+  await screen.rerender(<keys.Menu menu={loading("src/")} draftKey="draft-b" />);
+  await screen.rerender(
+    <keys.Menu menu={{ ...loading("src/"), settled: true }} draftKey="draft-b" />,
+  );
+  await screen.rerender(
+    <keys.Menu menu={{ ...loading("src/"), target: null }} draftKey="draft-b" />,
+  );
   expect(typeSpace).not.toHaveBeenCalled();
+
+  keys.press("choose", send);
+  await screen.rerender(<keys.Menu menu={loading("src/")} draftKey="draft-c" />);
+  await screen.rerender(
+    <keys.Menu menu={{ ...loading("src/"), settled: true, prose: true }} draftKey="draft-c" />,
+  );
+  expect(send).not.toHaveBeenCalled();
+  expect(keys.select).not.toHaveBeenCalled();
 });
 
 it("a key that did not wait is left to the editor, which acts on it itself", async () => {
