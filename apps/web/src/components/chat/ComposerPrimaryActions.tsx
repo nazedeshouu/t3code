@@ -10,7 +10,6 @@ import {
   CheckIcon,
   ChevronLeftIcon,
   Minimize2Icon,
-  PlayIcon,
   CornerUpRightIcon,
   ListPlusIcon,
 } from "lucide-react";
@@ -96,6 +95,32 @@ const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
 
+// Primary-button glyphs share the send arrow's line: a 14px grid, 1.8 stroke, rounded joins.
+const GLYPH_STROKE = {
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+} as const;
+
+function StopGlyph() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <rect x="4" y="4" width="6" height="6" rx="1.25" {...GLYPH_STROKE} />
+    </svg>
+  );
+}
+
+function ResumeGlyph() {
+  // The triangle's centroid sits on x=7, so it reads centered in the round button.
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <path d="M5.25 3.75L10.5 7L5.25 10.25Z" {...GLYPH_STROKE} />
+    </svg>
+  );
+}
+
 type StopPhase = "pending" | "timedOut" | "landed" | null;
 
 function useStopPhase(input: {
@@ -166,9 +191,7 @@ function StopGenerationButton({
           />
         }
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <rect x="2" y="2" width="8" height="8" rx="1.5" />
-        </svg>
+        <StopGlyph />
       </TooltipTrigger>
       <TooltipPopup>{stopPhase === "pending" ? "Stopping…" : "Interrupt"}</TooltipPopup>
     </Tooltip>
@@ -432,7 +455,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       {isSendBusy ? (
         <Spinner size="sm" aria-hidden="true" />
       ) : showResume ? (
-        <PlayIcon className="size-4 fill-current" aria-hidden="true" />
+        <ResumeGlyph />
       ) : isEditingQueuedMessage ? (
         <CheckIcon className="size-4" aria-hidden="true" />
       ) : isRunning && isQueuing ? (
