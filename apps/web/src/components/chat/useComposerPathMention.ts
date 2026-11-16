@@ -102,8 +102,8 @@ export function useComposerPathMention(target: PathMentionTarget | null): Compos
 
 /**
  * The result to show for a target: its own once it has one, and until then the last one shown,
- * so the menu holds its rows and height instead of blinking empty. A kept result still belongs
- * to the target it answered, which `stale` and every row built from it carry.
+ * so the menu holds its rows and height instead of blinking empty. A kept result is `stale` only
+ * for another target; it stays its own target's answer while that query quietly refreshes.
  */
 function useShownResult<Result, Target extends PathMentionTarget>(
   result: Result | null,
@@ -123,9 +123,12 @@ function useShownResult<Result, Target extends PathMentionTarget>(
     setKept(fresh);
   }
   const shown = fresh ?? kept;
-  return shown === null
-    ? null
-    : { ...shown, stale: fresh === null, resultKey: JSON.stringify(shown.target) };
+  if (shown === null || target === null) return null;
+  return {
+    ...shown,
+    stale: !samePathMentionTarget(shown.target, target),
+    resultKey: JSON.stringify(shown.target),
+  };
 }
 
 function sourceOf(target: PathMentionTarget): PathMentionTarget {
@@ -140,12 +143,13 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
   });
   const shown = useShownResult(search.isPending ? null : search.entries, target);
   if (target === null) return NOTHING;
+  const isLoading = search.isPending && (shown === null || shown.stale);
   const failed = !search.isPending && search.error !== null;
   const pending: ComposerPathMention = {
     ...NOTHING,
-    isLoading: search.isPending,
+    isLoading,
     emptyState: failed ? SEARCH_FAILED : NO_MATCHES,
-    miss: search.isPending ? "pending" : failed ? "failed" : "no-match",
+    miss: isLoading ? "pending" : failed ? "failed" : "no-match",
   };
   if (shown === null) return pending;
 
