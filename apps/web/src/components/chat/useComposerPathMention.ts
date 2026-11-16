@@ -1,4 +1,5 @@
 import {
+  type ComposerPathMiss,
   composerBrowsePartialPath,
   composerMentionPath,
   composerPathQueryInside,
@@ -38,14 +39,17 @@ export function samePathMentionTarget(left: PathMentionTarget, right: PathMentio
 
 export interface ComposerPathMention {
   readonly items: ReadonlyArray<PathEntryItem>;
-  /** How many leading `items` match by name; a bare `@word` lets only those lead other mentions. */
+  /** A bare `@word`'s leading `items` that hold the word in their name; only those lead other mentions. */
+  readonly closeNameMatchCount: number;
+  /** A bare `@word`'s leading `items` that match by name at all. */
   readonly nameMatchCount: number;
   /** Set while the query browses one directory; other `@` matches stay out then. */
   readonly browse: ComposerPathBrowse | null;
+  /** The answer to this query is still on its way; `items` are then the previous query's, if any. */
   readonly isLoading: boolean;
   readonly emptyState: string;
-  /** Nothing more is on its way for this query: `items` answer it, or it came back empty or failed. */
-  readonly settled: boolean;
+  /** Why the menu has no row to choose, when it has none. */
+  readonly miss: ComposerPathMiss;
   /** Names the result `items` came from; it changes only when another result takes its place. */
   readonly resultKey: string;
 }
@@ -62,15 +66,17 @@ export interface ComposerPathBrowse {
 const MENU_ROW_LIMIT = 80;
 const NARROWING_DEBOUNCE_MS = 120;
 const NO_MATCHES = "No matching files or folders.";
+const SEARCH_FAILED = "Couldn't search this project's files.";
 const isBrowseError = Schema.is(FilesystemBrowseError);
 
 const NOTHING: ComposerPathMention = {
   items: [],
+  closeNameMatchCount: 0,
   nameMatchCount: 0,
   browse: null,
   isLoading: false,
   emptyState: NO_MATCHES,
-  settled: true,
+  miss: "no-match",
   resultKey: "",
 };
 
@@ -134,7 +140,13 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
   });
   const shown = useShownResult(search.isPending ? null : search.entries, target);
   if (target === null) return NOTHING;
-  const pending = { ...NOTHING, isLoading: search.isPending, settled: !search.isPending };
+  const failed = !search.isPending && search.error !== null;
+  const pending: ComposerPathMention = {
+    ...NOTHING,
+    isLoading: search.isPending,
+    emptyState: failed ? SEARCH_FAILED : NO_MATCHES,
+    miss: search.isPending ? "pending" : failed ? "failed" : "no-match",
+  };
   if (shown === null) return pending;
 
   const ranked = rankSearchMatches(shown.result, shown.target.query);
@@ -154,8 +166,8 @@ function useProjectSearch(target: PathMentionTarget | null): ComposerPathMention
       labelMatches: emphasis[index] ?? null,
       description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
     })),
+    closeNameMatchCount: ranked.closeNameMatchCount,
     nameMatchCount: ranked.nameMatchCount,
-    emptyState: search.error ?? NO_MATCHES,
     resultKey: shown.resultKey,
   };
 }
@@ -200,32 +212,44 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
     (fileAccess.isPending ||
       listing.isPending ||
       (narrows && (debouncedFragment !== target.fragment || narrowed.isPending)));
-  const unanswered = { ...NOTHING, browse: NO_FOLDER, isLoading, settled: !isLoading };
+  const unanswered: ComposerPathMention = {
+    ...NOTHING,
+    browse: NO_FOLDER,
+    isLoading,
+    miss: isLoading ? "pending" : "no-match",
+  };
   const folderName = target.directory || "the project folder";
 
   if (!fileAccess.isPending && !fileAccess.canReadFiles) {
     return {
       ...unanswered,
       emptyState: fileAccess.error ?? "This connection can't read files on this machine.",
+      miss: "failed",
     };
   }
   if (needsProject) {
     return {
       ...unanswered,
       emptyState: "This thread has no project folder. Start the path with ~/ or /.",
+      miss: "missing-folder",
     };
   }
   if (!answered && !isLoading) {
     const failure = narrows ? narrowed.failure : listing.failure;
+    if (isBrowseError(failure) && failure.pathMissing) {
+      return {
+        ...unanswered,
+        emptyState: `No folder at ${target.directory}`,
+        miss: "missing-folder",
+      };
+    }
     return {
       ...unanswered,
-      emptyState: !isBrowseError(failure)
-        ? `Couldn't read ${folderName}.`
-        : failure.pathMissing
-          ? `No folder at ${target.directory}`
-          : failure.permissionDenied
-            ? `No permission to read ${folderName}.`
-            : `Couldn't read ${folderName}.`,
+      emptyState:
+        isBrowseError(failure) && failure.permissionDenied
+          ? `No permission to read ${folderName}.`
+          : `Couldn't read ${folderName}.`,
+      miss: "failed",
     };
   }
   if (shown === null) return unanswered;

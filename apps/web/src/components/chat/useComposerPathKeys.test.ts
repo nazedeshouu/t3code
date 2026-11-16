@@ -10,7 +10,7 @@ const target = (query: string, cwd = "/work/a"): PathMentionTarget => ({
   cwd,
   query,
 });
-const live = (query: string, quoted = false) => ({ ...target(query), quoted });
+const live = target;
 const row = (source: PathMentionTarget, name = "README.md"): PathEntryItem => ({
   id: `path-entry:${name}`,
   type: "path-entry",
@@ -28,6 +28,7 @@ const menu = (overrides: Partial<RenderedPathMenu>): RenderedPathMenu => ({
   settled: true,
   item: null,
   folder: null,
+  prose: false,
   ...overrides,
 });
 
@@ -74,23 +75,26 @@ describe("resolvePathMenuKey", () => {
     ).toEqual({ type: "wait" });
   });
 
-  it("swallows Enter on an empty, missing or unreadable folder instead of sending", () => {
+  it("swallows Enter on a missing or unreadable folder instead of sending", () => {
     expect(
-      resolvePathMenuKey("choose", live("empty/"), menu({ target: target("empty/") })),
+      resolvePathMenuKey("choose", live("~/gone/"), menu({ target: target("~/gone/") })),
     ).toEqual({ type: "ignore" });
   });
 
-  it("lets Enter send when a bare word or an open quote found nothing and so was prose", () => {
-    expect(resolvePathMenuKey("choose", live("sam"), menu({ target: target("sam") }))).toEqual({
-      type: "pass",
-    });
+  it("mentions an empty folder on Enter, the one thing there is to choose", () => {
+    const folder = row(target("empty/"), "empty");
     expect(
-      resolvePathMenuKey(
-        "choose",
-        live("either/or was fine", true),
-        menu({ target: target("either/or was fine") }),
-      ),
-    ).toEqual({ type: "pass" });
+      resolvePathMenuKey("choose", live("empty/"), menu({ target: target("empty/"), folder })),
+    ).toEqual({ type: "select", item: folder });
+  });
+
+  it("leaves Enter to send once a query with no rows reads as prose", () => {
+    const prose = menu({ target: target("types/node"), prose: true });
+    expect(resolvePathMenuKey("choose", live("types/node"), prose)).toEqual({ type: "pass" });
+    // Not before the lookup that decides it has come back.
+    expect(resolvePathMenuKey("choose", live("types/node"), { ...prose, settled: false })).toEqual({
+      type: "wait",
+    });
   });
 
   it("chooses rows of other kinds right away", () => {

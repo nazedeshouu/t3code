@@ -5,8 +5,8 @@ import {
   composerMentionPath,
   composerPathQueryInside,
   formatComposerPathToken,
+  isComposerPathQueryProse,
   matchEmphasis,
-  matchedTextRanges,
   orderComposerMentionItems,
   parseComposerPathQuery,
   rankComposerBrowseEntries,
@@ -143,7 +143,11 @@ describe("rankSearchMatches", () => {
       paths.map((path) => ({ path })),
       query,
     );
-    return { paths: ranked.entries.map((match) => match.path), names: ranked.nameMatchCount };
+    return {
+      paths: ranked.entries.map((match) => match.path),
+      close: ranked.closeNameMatchCount,
+      names: ranked.nameMatchCount,
+    };
   };
 
   it("puts name matches first, then loose and path matches, and drops the rest", () => {
@@ -161,35 +165,17 @@ describe("rankSearchMatches", () => {
       ),
     ).toEqual({
       paths: ["src/thread.ts", "README.md", "src/unrelated.ts", "docs/readme/intro.md"],
-      names: 2,
+      close: 2,
+      names: 3,
     });
   });
 
   it("keeps what the search found when nothing matches by name or path", () => {
     expect(rank(["design/typography.md", ".env.example"], "raed")).toEqual({
       paths: ["design/typography.md", ".env.example"],
+      close: 0,
       names: 0,
     });
-  });
-});
-
-describe("matchedTextRanges", () => {
-  it.each([
-    ["README.md", "read", [{ start: 0, end: 4 }]],
-    ["Button.tsx", "TON", [{ start: 3, end: 6 }]],
-    [
-      "ButtonGroup.tsx",
-      "bgx",
-      [
-        { start: 0, end: 1 },
-        { start: 6, end: 7 },
-        { start: 14, end: 15 },
-      ],
-    ],
-    ["index.ts", "zz", []],
-    ["index.ts", "", []],
-  ])("finds %j in %j", (text, query, ranges) => {
-    expect(matchedTextRanges(text, query)).toEqual(ranges);
   });
 });
 
@@ -210,9 +196,13 @@ describe("matchEmphasis", () => {
 describe("orderComposerMentionItems", () => {
   const files = ["f1", "f2", "f3", "f4", "f5", "f6"];
   const others = ["thread", "model"];
+  const matches = (closeNameMatchCount: number, nameMatchCount = closeNameMatchCount) => ({
+    closeNameMatchCount,
+    nameMatchCount,
+  });
 
   it("leads with at most four name matches, then other mentions, then the remaining files", () => {
-    expect(orderComposerMentionItems(files, 6, others)).toEqual([
+    expect(orderComposerMentionItems(files, matches(6), others)).toEqual([
       "f1",
       "f2",
       "f3",
@@ -225,11 +215,45 @@ describe("orderComposerMentionItems", () => {
   });
 
   it("keeps files that match only loosely or along their path below other mentions", () => {
-    expect(orderComposerMentionItems(files, 1, others)).toEqual([
+    expect(orderComposerMentionItems(files, matches(1), others)).toEqual([
       "f1",
       ...others,
       ...files.slice(1),
     ]);
-    expect(orderComposerMentionItems(files, 0, others)).toEqual([...others, ...files]);
+    expect(orderComposerMentionItems(files, matches(0), others)).toEqual([...others, ...files]);
+  });
+
+  it("offers nothing for a word that only matches along file paths, which is likely prose", () => {
+    expect(orderComposerMentionItems(files, matches(0), [])).toEqual([]);
+    // One loose name match is a real candidate, and brings the path matches along.
+    expect(orderComposerMentionItems(files, matches(0, 1), [])).toEqual(files);
+  });
+});
+
+describe("isComposerPathQueryProse", () => {
+  it.each([
+    // A bare word or quoted words are prose until something matches.
+    ["sam", false, "no-match", true],
+    ["sam", false, "failed", true],
+    ["so-called", true, "no-match", true],
+    [".hidden gem", true, "no-match", true],
+    // A relative path is prose unless its folder exists.
+    ["types/node", false, "missing-folder", true],
+    ["effect/platform", false, "pending", true],
+    ["either/or was fine", true, "missing-folder", true],
+    ["docs/", false, "no-match", false],
+    ["design notes/", true, "no-match", false],
+    ["src/zzz", false, "no-match", false],
+    // A path that says where it starts is a path whatever it finds.
+    ["~/nope/", false, "missing-folder", false],
+    ["/nope/x", false, "missing-folder", false],
+    ["./nope/", false, "missing-folder", false],
+    ["../nope/", false, "failed", false],
+    ["~/Library/", true, "pending", false],
+    // The project root and its dotfiles, unquoted, are always a listing.
+    ["", false, "pending", false],
+    [".env", false, "no-match", false],
+  ] as const)("reads @%j (quoted: %j, %s) as prose: %j", (query, quoted, miss, prose) => {
+    expect(isComposerPathQueryProse(query, quoted, miss)).toBe(prose);
   });
 });

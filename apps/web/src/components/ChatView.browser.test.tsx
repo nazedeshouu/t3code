@@ -757,7 +757,7 @@ it("@ browses folders from the keyboard: Enter opens one, Enter on a file mentio
   await expect.element(page.getByRole("button", { name: "Preview src" })).toBeVisible();
 });
 
-it("a key pressed before the @ rows land runs when they do, and an empty folder never sends", async () => {
+it("a key pressed before the @ rows land runs when they do, and a folder being browsed never sends", async () => {
   using _environment = installFakeEnvironment([]);
   // Listings stay cached between this file's tests, so these folders are this test's own.
   let releaseLib = () => {};
@@ -768,6 +768,7 @@ it("a key pressed before the @ rows land runs when they do, and an empty folder 
     "./": [
       ["lib", "directory"],
       ["vacant", "directory"],
+      ["vacant lot", "directory"],
     ],
     "./lib/": [
       ["components", "directory"],
@@ -775,6 +776,7 @@ it("a key pressed before the @ rows land runs when they do, and an empty folder 
     ],
     "./lib/components/": [["Button.tsx", "file"]],
     "./vacant/": [],
+    "./vacant lot/": [],
   };
   using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) => {
     const listing = listings[input.partialPath];
@@ -792,7 +794,7 @@ it("a key pressed before the @ rows land runs when they do, and an empty folder 
       ? Effect.promise(() => libListed).pipe(Effect.andThen(result))
       : result;
   });
-  const { router } = await draftRouter("path-keys");
+  const { router, draftId } = await draftRouter("path-keys");
   await using _app = await render(<AppRoot router={router} />, {
     // AppRoot brings its own router.
     router: false,
@@ -815,17 +817,127 @@ it("a key pressed before the @ rows land runs when they do, and an empty folder 
   await expect.element(option("Button.tsx")).toHaveAttribute("aria-selected", "true");
   expect(editor.element().textContent).toBe("@lib/components/");
 
-  // With nothing to choose, Enter and Tab stay with the menu rather than sending the prompt.
-  await userEvent.keyboard("{Backspace>16/}@vacant/");
-  await expect.element(page.getByText("This folder is empty.").first()).toBeVisible();
+  // A path that says where it starts stays a path when its folder is missing: Enter and Tab
+  // belong to the menu, which says so, rather than sending half a path.
+  await userEvent.keyboard("{Backspace>16/}@./missing/");
+  await expect.element(page.getByText("No folder at ./missing/").first()).toBeVisible();
   await userEvent.keyboard("{Enter}{Tab}");
-  await userEvent.keyboard("{Backspace>7/}missing/");
-  await expect.element(page.getByText("No folder at missing/").first()).toBeVisible();
-  await userEvent.keyboard("{Enter}");
-  expect(editor.element().textContent).toBe("@missing/");
-  expect(dispatchedCommands()).toEqual([]);
+  expect(editor.element().textContent).toBe("@./missing/");
 
-  // Escape hands Enter back to sending.
-  await userEvent.keyboard("{Escape}{Enter}");
+  // An empty folder has one thing to choose, the folder itself, and Enter takes it.
+  await userEvent.keyboard("{Backspace>11/}@vacant/");
+  await expect.element(page.getByText("This folder is empty.").first()).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("button", { name: "Preview vacant" })).toBeVisible();
+
+  // The same holds for a folder the menu had to quote: it stays a path, not quoted prose.
+  await userEvent.keyboard("@");
+  await expect.element(option("vacant lot/")).toBeVisible();
+  await userEvent.keyboard("{ArrowUp}{Enter}");
+  expect(editor.element().textContent).toContain('@"vacant lot/');
+  await expect.element(page.getByText("This folder is empty.").first()).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("button", { name: "Preview vacant lot" })).toBeVisible();
+  expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+    "[vacant](vacant) [vacant lot](vacant%20lot) ",
+  );
+  expect(dispatchedCommands()).toEqual([]);
+});
+
+it("an Enter pressed ahead of the @ search sends once the word turns out to be prose", async () => {
+  using _environment = installFakeEnvironment([]);
+  let releaseSearch = () => {};
+  const searched = new Promise<void>((resolve) => {
+    releaseSearch = resolve;
+  });
+  // The project search is loose: it answers `sam` with a file that only has those letters along its path.
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.promise(() => searched).pipe(
+      Effect.as({ entries: [{ path: "scripts/a/main.ts", kind: "file" }], truncated: false }),
+    ),
+  );
+  const { router } = await draftRouter("path-prose-word");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const menu = page.getByRole("listbox", { name: "Files and folders" });
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // Enter lands before the search answers. It waits, then sends: nothing is named `sam`.
+  await userEvent.click(editor);
+  await userEvent.keyboard("thanks @sam{Enter}");
+  expect(editor.element().textContent).toBe("thanks @sam");
+  releaseSearch();
   await expect.element(editor).toHaveTextContent("");
+  await expect.element(menu).not.toBeInTheDocument();
+});
+
+it("a scoped package name after @ is prose: no menu, and Enter sends", async () => {
+  using _environment = installFakeEnvironment([]);
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.succeed({ entries: [], truncated: false }),
+  );
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, ({ partialPath }: BrowseInput) =>
+    Effect.fail(
+      new FilesystemBrowseError({
+        partialPath,
+        failure: "read_directory_failed",
+        pathMissing: true,
+      }),
+    ),
+  );
+  const { router } = await draftRouter("path-prose-package");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // It is shaped like a path, but the project has no `types` folder.
+  await userEvent.click(editor);
+  await userEvent.keyboard("upgrade @types/node");
+  await expect.element(editor).toHaveTextContent("upgrade @types/node");
+  expect(document.querySelector("[data-composer-command-drawer]")).toBeNull();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(editor).toHaveTextContent("");
+});
+
+it("a folder too large for one listing narrows on the server as its name is typed", async () => {
+  using _environment = installFakeEnvironment([]);
+  const requested: Array<string> = [];
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) => {
+    requested.push(input.partialPath);
+    // The capped listing misses `zebra.ts`; only asking for the typed name reaches it.
+    const folder = { ...input, partialPath: "./big/" };
+    return Effect.succeed(
+      input.partialPath === "./big/zeb"
+        ? browseResult(folder, [["zebra.ts", "file"]])
+        : { ...browseResult(folder, [["alpha.ts", "file"]]), truncated: true },
+    );
+  });
+  const { router, draftId } = await draftRouter("path-truncated");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const option = (name: string) => page.getByRole("option", { name, exact: true });
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  await userEvent.click(editor);
+  await userEvent.keyboard("@big/");
+  await expect.element(option("alpha.ts")).toHaveAttribute("aria-selected", "true");
+
+  // After a pause in typing the server is asked for the name, and its rows replace the capped ones.
+  await userEvent.keyboard("zeb");
+  await expect.element(option("zebra.ts")).toHaveAttribute("aria-selected", "true");
+  await expect.element(option("alpha.ts")).not.toBeInTheDocument();
+  expect(requested).toContain("./big/zeb");
+  await userEvent.keyboard("{Enter}");
+  expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+    "[zebra.ts](big/zebra.ts) ",
+  );
 });

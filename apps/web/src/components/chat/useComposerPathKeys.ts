@@ -11,21 +11,6 @@ import {
 /** Enter and Tab choose a row; Space mentions the folder being browsed. */
 export type PathMenuKey = "choose" | "space";
 
-/** The `@` query in the editor at the moment a key arrives, which a render may not have seen. */
-export interface LivePathQuery extends PathMentionTarget {
-  /** Typed as `@"…`, where the query runs on through spaces. */
-  readonly quoted: boolean;
-}
-
-/**
- * A bare word or an open quote after `@` may be prose (`@sam`, `@"so-called`) rather than a file.
- * Finding nothing settles it as prose: the menu stays shut and Enter sends. Text shaped like a
- * path stays a path being typed, whatever it finds.
- */
-export function pathQueryMayBeProse(query: string, quoted: boolean): boolean {
-  return quoted || parseComposerPathQuery(query).mode === "search";
-}
-
 /** What the `@` path menu last rendered. */
 export interface RenderedPathMenu {
   /** The query it rendered for; null while no path menu is up. */
@@ -33,8 +18,10 @@ export interface RenderedPathMenu {
   readonly settled: boolean;
   /** The highlighted row, or else the first. */
   readonly item: ComposerCommandItem | null;
-  /** The browsed folder, while a Space would mention it. */
+  /** The browsed folder, while nothing is typed after its slash and so it can be mentioned. */
   readonly folder: PathEntryItem | null;
+  /** With no row to choose, the query reads as ordinary text and not as a mention being typed. */
+  readonly prose: boolean;
 }
 
 export type PathMenuKeyOutcome =
@@ -43,12 +30,16 @@ export type PathMenuKeyOutcome =
   | { readonly type: "wait" }
   /** Nothing to choose. The key still belongs to the open menu, so it must not send the prompt. */
   | { readonly type: "ignore" }
-  /** Not the menu's key. */
+  /** Not the menu's key: it does what it does anywhere else in the composer. */
   | { readonly type: "pass" };
 
+/**
+ * What a key means to the `@` path menu. `live` is the query in the editor at the moment the key
+ * arrives, which the menu's last render may not have seen yet.
+ */
 export function resolvePathMenuKey(
   key: PathMenuKey,
-  live: LivePathQuery,
+  live: PathMentionTarget,
   menu: RenderedPathMenu,
 ): PathMenuKeyOutcome {
   const answered = menu.settled && menu.target !== null && samePathMentionTarget(menu.target, live);
@@ -66,35 +57,40 @@ export function resolvePathMenuKey(
     return { type: "select", item };
   }
   if (!answered) return { type: "wait" };
-  return pathQueryMayBeProse(live.query, live.quoted) ? { type: "pass" } : { type: "ignore" };
+  if (menu.prose) return { type: "pass" };
+  // An empty folder leaves one thing to choose, the folder itself. A missing or unreadable one,
+  // or a name matching nothing, leaves none.
+  return menu.folder ? { type: "select", item: menu.folder } : { type: "ignore" };
 }
 
 /**
- * Keys for the `@` path menu. One pressed ahead of its rows (Enter right after typing a name, or
- * a second Enter while the folder the first opened still loads) waits and runs when the rows for
- * that query land; editing the query or closing the menu drops it. Returns whether a key was taken.
+ * Keys for the `@` path menu; the handler returns whether the menu took the key. One pressed
+ * ahead of its rows waits and runs when the rows for that query land, unless the query is edited
+ * or the menu closed first. If the menu then has no use for it, `whenUnclaimed` runs instead:
+ * what that key does outside the menu, such as sending the message.
  */
 export function useComposerPathKeys(input: {
   readonly menu: RenderedPathMenu;
   /** The editor's current `@` query; null when the cursor is not in one. */
-  readonly readLiveQuery: () => LivePathQuery | null;
+  readonly readLiveQuery: () => PathMentionTarget | null;
   readonly select: (item: ComposerCommandItem) => void;
-  /** Types the Space a waiting key held back, when the folder turned out not to exist. */
-  readonly typeSpace: () => void;
-}): (key: PathMenuKey) => boolean {
+}): (key: PathMenuKey, whenUnclaimed: () => void) => boolean {
   const latest = useRef(input);
-  const waiting = useRef<{ readonly key: PathMenuKey; readonly target: PathMentionTarget } | null>(
-    null,
-  );
+  const waiting = useRef<{
+    readonly key: PathMenuKey;
+    readonly target: PathMentionTarget;
+    readonly whenUnclaimed: () => void;
+  } | null>(null);
 
-  const press = (key: PathMenuKey, heldBack: boolean): boolean => {
-    const { menu, readLiveQuery, select, typeSpace } = latest.current;
+  const press = (key: PathMenuKey, whenUnclaimed: () => void, waited: boolean): boolean => {
+    const { menu, readLiveQuery, select } = latest.current;
     const live = readLiveQuery();
+    waiting.current = null;
     if (live === null) return false;
     const outcome = resolvePathMenuKey(key, live, menu);
-    waiting.current = outcome.type === "wait" ? { key, target: live } : null;
+    if (outcome.type === "wait") waiting.current = { key, target: live, whenUnclaimed };
     if (outcome.type === "select") select(outcome.item);
-    if (outcome.type === "pass" && heldBack && key === "space") typeSpace();
+    if (outcome.type === "pass" && waited) whenUnclaimed();
     return outcome.type !== "pass";
   };
 
@@ -104,9 +100,15 @@ export function useComposerPathKeys(input: {
     const held = waiting.current;
     if (held === null) return;
     const { target, settled } = input.menu;
-    if (target === null || !samePathMentionTarget(target, held.target)) waiting.current = null;
-    else if (settled) press(held.key, true);
+    if (target === null || !samePathMentionTarget(target, held.target)) {
+      waiting.current = null;
+    } else if (settled) {
+      // After the commit: the key edits the editor, which flushes its own update synchronously.
+      queueMicrotask(() => {
+        if (waiting.current === held) press(held.key, held.whenUnclaimed, true);
+      });
+    }
   });
 
-  return (key) => press(key, false);
+  return (key, whenUnclaimed) => press(key, whenUnclaimed, false);
 }

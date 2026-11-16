@@ -6,7 +6,10 @@ import {
   matchComposerEnvironmentItems,
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
-import { orderComposerMentionItems } from "@t3tools/client-runtime/composerPathMention";
+import {
+  isComposerPathQueryProse,
+  orderComposerMentionItems,
+} from "@t3tools/client-runtime/composerPathMention";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import type {
@@ -245,11 +248,7 @@ export function useComposerMenuItems({
         }),
       ];
       if (betterFileMentions) {
-        return orderComposerMentionItems(
-          pathMention.items,
-          pathMention.nameMatchCount,
-          otherMentions,
-        );
+        return orderComposerMentionItems(pathMention.items, pathMention, otherMentions);
       }
       return [
         ...otherMentions,
@@ -471,11 +470,30 @@ export function useComposerMenuItems({
     return composerTriggerKind === "path" ? pathMention.emptyState : "No matching command.";
   })();
 
+  // Enter and the menu's visibility both turn on this one reading of a query with no rows.
+  const pathQueryIsProse =
+    pathMentionTarget !== null &&
+    items.length === 0 &&
+    isComposerPathQueryProse(
+      pathMentionTarget.query,
+      composerTrigger?.quoted === true,
+      pathMention.miss,
+    );
+
   return {
     items,
     isLoading,
     emptyState,
-    /** The Labs `@` path menu behind `items`; its target is null whenever that menu is not up. */
-    pathMenu: { ...pathMention, target: pathMentionTarget },
+    /** The Labs `@` path menu behind `items`; its target is null whenever that menu is not in play. */
+    pathMenu: {
+      target: pathMentionTarget,
+      /** Nothing more is on its way for the target: the rows answer it, or it came back empty or failed. */
+      settled: !pathMention.isLoading,
+      resultKey: pathMention.resultKey,
+      browse: pathMention.browse,
+      prose: pathQueryIsProse,
+      // Prose gets no menu, except to say that looking the word up failed.
+      hidden: pathQueryIsProse && pathMention.miss !== "failed",
+    },
   };
 }

@@ -1,5 +1,5 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
-import type { TextRange } from "@t3tools/client-runtime/composerPathMention";
+import type { TextRange } from "@t3tools/shared/pathEntryMatch";
 import type { ComposerPathSearchTarget } from "@t3tools/client-runtime/state/threads";
 import {
   resolveProviderSkillSourceKind,

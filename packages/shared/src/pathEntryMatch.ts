@@ -6,6 +6,9 @@ const TIER_WIDTH = 1000;
 /** `scoreEntryName` scores from here up matched as scattered letters rather than one run. */
 export const SUBSEQUENCE_MATCH_SCORE = 4 * TIER_WIDTH;
 
+/** A match right after one of these starts a word inside a name. */
+const WORD_BOUNDARY_MARKERS = [" ", "-", "_", "."];
+
 /**
  * How closely a file or folder name matches typed text: lower is closer, null is no match. The
  * thousands digit is the match tier.
@@ -20,7 +23,7 @@ export function scoreEntryName(name: string, query: string): number | null {
     boundaryBase: 2 * TIER_WIDTH,
     includesBase: 3 * TIER_WIDTH,
     fuzzyBase: SUBSEQUENCE_MATCH_SCORE,
-    boundaryMarkers: [" ", "-", "_", "."],
+    boundaryMarkers: WORD_BOUNDARY_MARKERS,
   };
   const rawScore = scoreQueryMatch({
     ...options,
@@ -33,6 +36,46 @@ export function scoreEntryName(name: string, query: string): number | null {
   });
   if (rawScore === null) return normalizedScore;
   return normalizedScore === null ? rawScore : Math.min(rawScore, normalizedScore);
+}
+
+export interface TextRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * The characters of `name` that `scoreEntryName` matched `query` on, for emphasising them: the
+ * run it ranked by (a prefix, else a word start, else the first occurrence), or else each letter
+ * of a left-to-right subsequence. Empty when the query does not match.
+ */
+export function entryNameMatchRanges(name: string, query: string): ReadonlyArray<TextRange> {
+  if (query.length === 0) return [];
+  const haystack = name.toLowerCase();
+  const needle = query.toLowerCase();
+  // Case folding can change a string's length; indices would then point at the wrong characters.
+  if (haystack.length !== name.length) return [];
+  const runStart = haystack.startsWith(needle)
+    ? 0
+    : (wordStartIndex(haystack, needle) ?? haystack.indexOf(needle));
+  if (runStart >= 0) return [{ start: runStart, end: runStart + needle.length }];
+  const ranges: Array<{ start: number; end: number }> = [];
+  let from = 0;
+  for (const character of needle) {
+    const index = haystack.indexOf(character, from);
+    if (index < 0) return [];
+    const last = ranges.at(-1);
+    if (last && last.end === index) last.end = index + character.length;
+    else ranges.push({ start: index, end: index + character.length });
+    from = index + character.length;
+  }
+  return ranges;
+}
+
+function wordStartIndex(haystack: string, needle: string): number | null {
+  const starts = WORD_BOUNDARY_MARKERS.map((marker) => haystack.indexOf(`${marker}${needle}`))
+    .filter((index) => index >= 0)
+    .map((index) => index + 1);
+  return starts.length > 0 ? Math.min(...starts) : null;
 }
 
 const byName = new Intl.Collator(undefined, { numeric: true });

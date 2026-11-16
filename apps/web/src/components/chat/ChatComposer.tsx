@@ -55,7 +55,7 @@ import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { parseSideChatCommand, serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { formatComposerPathToken } from "@t3tools/client-runtime/composerPathMention";
-import { pathQueryMayBeProse, useComposerPathKeys } from "./useComposerPathKeys";
+import { useComposerPathKeys } from "./useComposerPathKeys";
 import { samePathMentionTarget } from "./useComposerPathMention";
 import { nazeLabEnabled } from "../../nazeLabs";
 import { type FolderDropTarget, folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
@@ -1155,19 +1155,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     betterFileMentions,
   });
 
-  const composerMenuOpen =
-    composerTrigger !== null &&
-    !(
-      composerMenuItems.length === 0 &&
-      composerPathMenu.target !== null &&
-      pathQueryMayBeProse(composerTrigger.query, composerTrigger.quoted === true)
-    );
+  const composerMenuOpen = composerTrigger !== null && !composerPathMenu.hidden;
   const composerMenuSearchKey = composerTrigger
     ? // Another path result taking over counts as a new search: the highlight returns to the top.
       `${composerSuggestionListId}:${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}:${composerPathMenu.resultKey}`
     : null;
+  // Rows left from the previous `@` query stay on screen while the next loads, but off offer.
+  const selectableComposerMenuItems = composerMenuItems.filter(isComposerItemSelectable);
   const activeComposerMenuItemId = resolveComposerMenuActiveItemId({
-    items: composerMenuItems.filter(isComposerItemSelectable),
+    items: selectableComposerMenuItems,
     highlightedItemId: composerHighlightedItemId,
     currentSearchKey: composerMenuSearchKey,
     highlightedSearchKey: composerHighlightedSearchKey,
@@ -2135,19 +2131,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       folder: composerPathMenu.browse?.spaceMentionsFolder
         ? composerPathMenu.browse.currentFolder
         : null,
+      prose: composerPathMenu.prose,
     },
     readLiveQuery: () => {
       const { trigger } = resolveActiveComposerTrigger();
       return betterFileMentions && trigger?.kind === "path"
-        ? { environmentId, cwd: gitCwd, query: trigger.query, quoted: trigger.quoted === true }
+        ? { environmentId, cwd: gitCwd, query: trigger.query }
         : null;
     },
     // A key that waited for its rows runs outside the click-and-key lock's frame.
     select: selectComposerItem,
-    typeSpace: () => {
-      const { trigger } = resolveActiveComposerTrigger();
-      if (trigger) applyPromptReplacement(trigger.rangeEnd, trigger.rangeEnd, " ");
-    },
   });
 
   const onComposerMenuItemHighlighted = (itemId: string | null) => {
@@ -2157,15 +2150,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const onComposerMenuItemHighlightedStable = useStableCallback(onComposerMenuItemHighlighted);
 
   const nudgeComposerMenuHighlight = (key: "ArrowDown" | "ArrowUp") => {
-    if (composerMenuItems.length === 0) return;
-    const highlightedIndex = composerMenuItems.findIndex(
+    if (selectableComposerMenuItems.length === 0) return;
+    const highlightedIndex = selectableComposerMenuItems.findIndex(
       (item) => item.id === composerHighlightedItemId,
     );
     const normalizedIndex = highlightedIndex >= 0 ? highlightedIndex : key === "ArrowDown" ? -1 : 0;
     const offset = key === "ArrowDown" ? 1 : -1;
     const nextIndex =
-      (normalizedIndex + offset + composerMenuItems.length) % composerMenuItems.length;
-    const nextItem = composerMenuItems[nextIndex];
+      (normalizedIndex + offset + selectableComposerMenuItems.length) %
+      selectableComposerMenuItems.length;
+    const nextItem = selectableComposerMenuItems[nextIndex];
     setComposerHighlightedItemId(nextItem?.id ?? null);
   };
 

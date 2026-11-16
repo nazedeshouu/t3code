@@ -66,8 +66,11 @@ export function composerCommandKeyHandler(input: {
   readonly composerMenuOpenRef: RefObject<boolean>;
   readonly composerMenuItemsRef: RefObject<ComposerCommandItem[]>;
   readonly activeComposerMenuItemRef: RefObject<ComposerCommandItem | null>;
-  /** Offers a key to the Labs `@` path menu; true when the menu took it. */
-  readonly onPathMenuKey: (key: PathMenuKey) => boolean;
+  /**
+   * Offers a key to the Labs `@` path menu; true when the menu took it. A key the menu held for
+   * its rows and then had no use for runs `whenUnclaimed` instead.
+   */
+  readonly onPathMenuKey: (key: PathMenuKey, whenUnclaimed: () => void) => boolean;
   readonly setComposerDraftPrompt: (
     target: ChatComposerProps["composerDraftTarget"],
     prompt: string,
@@ -239,6 +242,31 @@ export function composerCommandKeyHandler(input: {
     if (key === "Tab" && event.shiftKey && submissionIntent === null) {
       return applyListEdit(event, listOutdentForTab);
     }
+    // What Enter and Tab do when no menu takes them: send, or continue a list.
+    const sendOrEditList = (): boolean => {
+      if (submissionIntent) {
+        submitComposer(
+          undefined,
+          resolveComposerDispatchMode({
+            running: phase === "running" || phase === "connecting",
+            alternateModifier: submissionIntent === "alternate",
+            activeTurnDefault: followUpBehavior,
+            canSteer,
+          }),
+          submissionIntent,
+        );
+        return true;
+      }
+      if (key === "Enter" && isTaskItem) return false;
+      if (key === "Enter" || (key === "Tab" && !event.shiftKey)) {
+        return applyListEdit(event, key === "Enter" ? listContinuationForEnter : listIndentForTab);
+      }
+      return false;
+    };
+    const typeSpace = () => {
+      const { trigger: current } = resolveActiveComposerTrigger();
+      if (current) applyPromptReplacement(current.rangeEnd, current.rangeEnd, " ");
+    };
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive =
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
@@ -265,13 +293,18 @@ export function composerCommandKeyHandler(input: {
         return true;
       }
       if (key === "Enter" || key === "Tab") {
-        if (onPathMenuKey("choose")) return true;
+        if (onPathMenuKey("choose", sendOrEditList)) return true;
         if (selectedItem) {
           onSelectComposerItem(selectedItem);
           return true;
         }
       }
-      if (key === " " && !event.isComposing && event.keyCode !== 229 && onPathMenuKey("space")) {
+      if (
+        key === " " &&
+        !event.isComposing &&
+        event.keyCode !== 229 &&
+        onPathMenuKey("space", typeSpace)
+      ) {
         return true;
       }
     }
@@ -293,24 +326,7 @@ export function composerCommandKeyHandler(input: {
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
-    if (submissionIntent) {
-      submitComposer(
-        undefined,
-        resolveComposerDispatchMode({
-          running: phase === "running" || phase === "connecting",
-          alternateModifier: submissionIntent === "alternate",
-          activeTurnDefault: followUpBehavior,
-          canSteer,
-        }),
-        submissionIntent,
-      );
-      return true;
-    }
-    if (key === "Enter" && isTaskItem) return false;
-    if (key === "Enter" || (key === "Tab" && !event.shiftKey)) {
-      return applyListEdit(event, key === "Enter" ? listContinuationForEnter : listIndentForTab);
-    }
-    return false;
+    return sendOrEditList();
   };
 
   return onComposerCommandKey;
