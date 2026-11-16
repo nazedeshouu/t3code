@@ -142,10 +142,9 @@ const isAtOrUnder = (path: Path.Path, parent: string, child: string) => {
 };
 
 /**
- * Expands `~/`, forgiving `~/Users/me/x` typed by someone who meant `/Users/me/x`. When the
- * directory after `~/` is missing under home but, read from the root, lies on the way to home or
- * inside it, the path is read from the root. That holds while the path is still being typed, so
- * `~/Users/` already lists `/Users`.
+ * Expands `~/`. People type `~/Users/me/x` when they mean `/Users/me/x`, so that path is read
+ * from the root instead, as long as home has no such folder of its own and the root's one leads
+ * to home or lies inside it. This holds mid-typing too: `~/Users/` already lists `/Users`.
  */
 const expandBrowseHomePath = Effect.fn("WorkspaceEntries.expandBrowseHomePath")(function* (
   partialPath: string,
@@ -167,10 +166,9 @@ const expandBrowseHomePath = Effect.fn("WorkspaceEntries.expandBrowseHomePath")(
 });
 
 /**
- * The root folder on the way to home (`Users` for `/Users/me`), unless home holds an entry of
- * that name or a typed name rules it out. `expandBrowseHomePath` reads `~/Users/` from the root,
- * so a listing of `~/` carries the folder that path opens, for a client to offer as `~/Us` is
- * typed. It is the one entry whose `fullPath` lies outside the listed folder.
+ * The root folder that leads to home: `Users` for `/Users/me`. `expandBrowseHomePath` reads
+ * `~/Users/…` from the root, so a listing of `~/` carries this folder to offer while `~/Us` is
+ * typed. Left out when home has an entry of that name, or the typed name does not match it.
  */
 const rootFolderTowardHome = (
   typedName: string,

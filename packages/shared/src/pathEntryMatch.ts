@@ -44,10 +44,10 @@ export interface TextRange {
 }
 
 /**
- * The characters of `name` that `scoreEntryName` matched `query` on, for emphasising them: the
- * run it ranked by (a prefix, else a word start, else the first occurrence), or else each letter
- * of a left-to-right subsequence. Like the score, it reads the name as stored and then composed,
- * so an accented name stored decomposed is emphasised too. Empty when the query does not match.
+ * The characters of `name` to emphasise for `query`, as `scoreEntryName` matched them: one run
+ * where the name holds the query (at its start, else a word start, else anywhere), otherwise the
+ * query's letters in order. Empty when nothing matches. Like the score, it tries the name as
+ * stored and then composed, so an accented name stored decomposed is emphasised too.
  */
 export function entryNameMatchRanges(name: string, query: string): ReadonlyArray<TextRange> {
   if (query.length === 0) return [];
@@ -84,10 +84,9 @@ function matchRanges(name: string, query: string): ReadonlyArray<TextRange> {
 }
 
 /**
- * `name` composed (NFC) one base-and-marks cluster at a time, with the cluster of `name` behind
- * each composed character, so a match found in the composed text can be emphasised in the name
- * as shown. Null when composing cluster by cluster is not composing the whole, as with Hangul
- * jamo, which join across clusters.
+ * `name` composed (NFC) one letter-and-accents cluster at a time. `clusters` maps each character
+ * of the composed `text` to its cluster in `name`, so a match in `text` can be emphasised in the
+ * name as shown. Null when this differs from composing the whole name, as with Hangul jamo.
  */
 function composeByCluster(
   name: string,

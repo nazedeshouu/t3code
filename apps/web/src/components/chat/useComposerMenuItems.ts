@@ -472,19 +472,17 @@ export function useComposerMenuItems({
   })();
 
   // With no row to choose, Enter and the menu's visibility both turn on how the query reads.
-  const hasPathMenuChoice = items.some(isComposerItemSelectable);
+  const pathMenuHasNoChoice = pathMentionTarget !== null && !items.some(isComposerItemSelectable);
   const pathQuery = pathMentionTarget?.query ?? "";
   const pathQueryQuoted = composerTrigger?.quoted === true;
   const pathQueryIsProse =
-    pathMentionTarget !== null &&
-    !hasPathMenuChoice &&
+    pathMenuHasNoChoice &&
     pathMention.miss !== "pending" &&
     isComposerPathQueryProse(pathQuery, pathQueryQuoted, pathMention.miss);
   // What a pending query goes by: whether the menu was hidden for the query before it.
   const [pathMenuWasHidden, setPathMenuWasHidden] = useState<boolean | null>(null);
   const pathMenuHidden =
-    pathMentionTarget !== null &&
-    !hasPathMenuChoice &&
+    pathMenuHasNoChoice &&
     isComposerPathMenuHidden(pathQuery, pathQueryQuoted, pathMention.miss, pathMenuWasHidden);
   const pathMenuVisibility = pathMentionTarget === null ? null : pathMenuHidden;
   if (pathMenuWasHidden !== pathMenuVisibility) setPathMenuWasHidden(pathMenuVisibility);
