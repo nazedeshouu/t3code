@@ -95,7 +95,7 @@ export function composerCommandKeyHandler(input: {
     rangeStart: number,
     rangeEnd: number,
     replacement: string,
-    options?: { expandedCursorAfterReplace?: number },
+    options?: { expectedText?: string; expandedCursorAfterReplace?: number },
   ) => boolean;
   readonly submitComposer: (
     event: undefined,
@@ -263,11 +263,26 @@ export function composerCommandKeyHandler(input: {
       }
       return false;
     };
-    const typeSpace = () => {
-      const { trigger: current } = resolveActiveComposerTrigger();
-      if (current) applyPromptReplacement(current.rangeEnd, current.rangeEnd, " ");
-    };
     const { trigger } = resolveActiveComposerTrigger();
+    // A held Enter that no menu took is still a keypress. Where it neither sends nor edits a
+    // list, as with Mod+Enter to send, it breaks the line the way it would have at once.
+    const replayEnterOrTab = () => {
+      if (!sendOrEditList() && key === "Enter") composerEditorRef.current?.insertNewline();
+    };
+    // A held Space lands where it was pressed, right after the `@` text as it then stood. The
+    // user may have typed on since (`@src/`, Space, `and`), which leaves the caret further along;
+    // if that text itself has changed, the place is gone and so is the Space.
+    const heldToken = trigger
+      ? readComposerSnapshot().value.slice(trigger.rangeStart, trigger.rangeEnd)
+      : "";
+    const typeHeldSpace = () => {
+      const caret = composerEditorRef.current?.readSelectionRange().end;
+      if (!trigger || caret === undefined) return;
+      applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, `${heldToken} `, {
+        expectedText: heldToken,
+        expandedCursorAfterReplace: caret + 1,
+      });
+    };
     const menuIsActive =
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
     if (key === "Escape") {
@@ -293,7 +308,7 @@ export function composerCommandKeyHandler(input: {
         return true;
       }
       if (key === "Enter" || key === "Tab") {
-        if (onPathMenuKey("choose", sendOrEditList)) return true;
+        if (onPathMenuKey("choose", replayEnterOrTab)) return true;
         if (selectedItem) {
           onSelectComposerItem(selectedItem);
           return true;
@@ -303,7 +318,7 @@ export function composerCommandKeyHandler(input: {
         key === " " &&
         !event.isComposing &&
         event.keyCode !== 229 &&
-        onPathMenuKey("space", typeSpace)
+        onPathMenuKey("space", typeHeldSpace)
       ) {
         return true;
       }

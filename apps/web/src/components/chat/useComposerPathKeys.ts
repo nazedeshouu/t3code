@@ -63,9 +63,9 @@ export function resolvePathMenuKey(
 
 /**
  * Keys for the `@` path menu; the handler returns whether the menu took the key. One pressed
- * ahead of its rows waits and runs when the rows for that query land, unless the query is edited
- * or the menu closed first. If the menu then has no use for it, `whenUnclaimed` runs instead:
- * what that key does outside the menu, such as sending the message.
+ * ahead of its rows waits for that query's rows, then runs; if the menu has no use for it,
+ * `whenUnclaimed` runs instead: what the key does outside the menu, such as sending the message.
+ * Closing the menu drops a waiting key. So does typing on, except for a Space.
  */
 export function useComposerPathKeys(input: {
   readonly menu: RenderedPathMenu;
@@ -100,6 +100,9 @@ export function useComposerPathKeys(input: {
     const { target, settled } = input.menu;
     if (target === null || !samePathMentionTarget(target, held.target)) {
       waiting.current = null;
+      // Typed past: a choice aimed at rows that will never show is void, but a Space is a
+      // character the user typed, and is not to be lost.
+      if (target !== null && held.key === "space") queueMicrotask(held.whenUnclaimed);
     } else if (settled) {
       // After the commit: the key edits the editor, which flushes its own update synchronously.
       queueMicrotask(() => {

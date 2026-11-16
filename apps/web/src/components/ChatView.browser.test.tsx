@@ -997,6 +997,66 @@ it("Enter on a folder found by search opens it without the menu closing in betwe
   await expect.element(option("depot/")).not.toBeInTheDocument();
 });
 
+it("a held Enter that the @ menu has no use for breaks the line when Mod+Enter sends", async () => {
+  using _environment = installFakeEnvironment([]);
+  let releaseSearch = () => {};
+  const searched = new Promise<void>((resolve) => {
+    releaseSearch = resolve;
+  });
+  using _search = answerRpc(WS_METHODS.projectsSearchEntries, () =>
+    Effect.promise(() => searched).pipe(Effect.as({ entries: [], truncated: false })),
+  );
+  const { router, draftId } = await draftRouter("path-held-newline", { sendShortcut: "mod-enter" });
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // Enter waits on the search. `quinn` names nothing, so the key was the editor's all along.
+  await userEvent.click(editor);
+  await userEvent.keyboard("thanks @quinn{Enter}");
+  expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe("thanks @quinn");
+  releaseSearch();
+  await vi.waitFor(() =>
+    expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toMatch(
+      /^thanks @quinn\n+$/,
+    ),
+  );
+  expect(dispatchedCommands()).toEqual([]);
+});
+
+it("a Space held for a folder listing is typed where it was pressed if typing goes on", async () => {
+  using _environment = installFakeEnvironment([]);
+  let releaseAtlas = () => {};
+  const atlasListed = new Promise<void>((resolve) => {
+    releaseAtlas = resolve;
+  });
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, (input: BrowseInput) =>
+    input.partialPath === "./atlas/"
+      ? Effect.promise(() => atlasListed).pipe(Effect.as(browseResult(input, [["and.ts", "file"]])))
+      : Effect.succeed(browseResult(input, [])),
+  );
+  const { router, draftId } = await draftRouter("path-held-space");
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  // Space waits to learn whether atlas/ can be mentioned; the user does not wait for it.
+  await userEvent.click(editor);
+  await userEvent.keyboard("@atlas/ and more");
+  releaseAtlas();
+  await vi.waitFor(() =>
+    expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+      "@atlas/ and more",
+    ),
+  );
+});
+
 it("a folder too large for one listing narrows on the server as its name is typed", async () => {
   using _environment = installFakeEnvironment([]);
   const requested: Array<string> = [];

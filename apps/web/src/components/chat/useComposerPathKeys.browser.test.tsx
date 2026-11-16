@@ -86,7 +86,7 @@ it("a held key that finds a row chooses it and never falls through to sending", 
   expect(send).not.toHaveBeenCalled();
 });
 
-it("editing the query or leaving it drops a held key", async () => {
+it("editing the query or leaving it drops a held Enter", async () => {
   const keys = mountPathKeys("sam");
   const send = vi.fn();
   await using screen = await render(<keys.Menu menu={loading("sam")} />, { router: false });
@@ -104,6 +104,34 @@ it("editing the query or leaving it drops a held key", async () => {
   await screen.rerender(<keys.Menu menu={{ ...loading("samp"), target: null, settled: true }} />);
   await screen.rerender(<keys.Menu menu={{ ...loading("samp"), settled: true, prose: true }} />);
   expect(send).not.toHaveBeenCalled();
+});
+
+it("typing on past a held Space still types the Space, once", async () => {
+  const keys = mountPathKeys("src/");
+  const typeSpace = vi.fn();
+  await using screen = await render(<keys.Menu menu={loading("src/")} />, { router: false });
+
+  // Space waits to learn whether src/ can be mentioned.
+  expect(keys.press("space", typeSpace)).toBe(true);
+  expect(typeSpace).not.toHaveBeenCalled();
+
+  // The user types on before the listing lands. The Space was a character too.
+  keys.live.current = target("src/a");
+  await screen.rerender(<keys.Menu menu={loading("src/a")} />);
+  expect(typeSpace).toHaveBeenCalledTimes(1);
+  await screen.rerender(<keys.Menu menu={{ ...loading("src/a"), settled: true }} />);
+  expect(typeSpace).toHaveBeenCalledTimes(1);
+  expect(keys.select).not.toHaveBeenCalled();
+});
+
+it("closing the menu drops a held Space", async () => {
+  const keys = mountPathKeys("src/");
+  const typeSpace = vi.fn();
+  await using screen = await render(<keys.Menu menu={loading("src/")} />, { router: false });
+  keys.press("space", typeSpace);
+  await screen.rerender(<keys.Menu menu={{ ...loading("src/"), target: null }} />);
+  await screen.rerender(<keys.Menu menu={{ ...loading("src/"), settled: true }} />);
+  expect(typeSpace).not.toHaveBeenCalled();
 });
 
 it("a key that did not wait is left to the editor, which acts on it itself", async () => {
