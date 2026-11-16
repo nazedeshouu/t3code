@@ -45,7 +45,7 @@ export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 export const FilesystemBrowseResult = Schema.Struct({
   parentPath: TrimmedNonEmptyString,
   entries: Schema.Array(FilesystemBrowseEntry),
-  /** The directory holds more entries than one listing carries; a longer prefix narrows it. */
+  /** More entries matched than one listing carries; a longer typed name narrows them. */
   truncated: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
@@ -72,6 +72,8 @@ export class FilesystemBrowseError extends Schema.TaggedError<FilesystemBrowseEr
     platform: Schema.optional(TrimmedNonEmptyString),
     /** Set when the directory does not exist; older clients ignore it. */
     pathMissing: Schema.optional(Schema.Boolean),
+    /** Set when a file-inclusive browse may not read the directory. */
+    permissionDenied: Schema.optional(Schema.Boolean),
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -84,6 +86,7 @@ export class FilesystemBrowseError extends Schema.TaggedError<FilesystemBrowseEr
     readonly parentPath?: string;
     readonly platform?: string;
     readonly pathMissing?: boolean;
+    readonly permissionDenied?: boolean;
     readonly cause?: unknown;
   }) {
     const cwd = props.cwd === undefined ? "" : ` from '${props.cwd}'`;
