@@ -5,6 +5,7 @@ import {
   composerMentionPath,
   composerPathQueryInside,
   formatComposerPathToken,
+  composerBrowseGap,
   isComposerPathMenuHidden,
   isComposerPathQueryProse,
   matchEmphasis,
@@ -104,9 +105,7 @@ describe("rankComposerBrowseEntries", () => {
     entry("notes2.md", "file"),
   ];
   const names = (fragment: string) =>
-    rankComposerBrowseEntries({ parentPath: "/work/app", entries }, fragment).map(
-      (candidate) => candidate.name,
-    );
+    rankComposerBrowseEntries({ entries }, fragment).map((candidate) => candidate.name);
 
   it("lists folders before files, A to Z, and leaves dotfiles out until asked", () => {
     expect(names("")).toEqual([
@@ -126,12 +125,11 @@ describe("rankComposerBrowseEntries", () => {
     expect(names("no")).toEqual(["notes2.md", "notes10.md"]);
   });
 
-  it("offers the root folder a ~/ listing carries only once a name is typed", () => {
+  it("offers an entry from outside the folder only once a name is typed", () => {
     const home = {
-      parentPath: "/Users/me",
       entries: [
         { name: "Music", fullPath: "/Users/me/Music", kind: "directory" as const },
-        { name: "Users", fullPath: "/Users", kind: "directory" as const },
+        { name: "Users", fullPath: "/Users", kind: "directory" as const, outsideListing: true },
       ],
     };
     const homeNames = (fragment: string) =>
@@ -147,13 +145,35 @@ describe("rankComposerBrowseEntries", () => {
 
   it("treats an entry without a kind, from an older server, as a folder", () => {
     const legacy = {
-      parentPath: "/work/app",
       entries: [{ name: "src", fullPath: "/work/app/src" }, entry("a.ts", "file")],
     };
     expect(rankComposerBrowseEntries(legacy, "").map((candidate) => candidate.name)).toEqual([
       "src",
       "a.ts",
     ]);
+  });
+});
+
+describe("composerBrowseGap", () => {
+  const inside = { name: ".zshrc", fullPath: "/Users/me/.zshrc", kind: "file" as const };
+  const outside = {
+    name: "Users",
+    fullPath: "/Users",
+    kind: "directory" as const,
+    outsideListing: true,
+  };
+
+  it.each([
+    [[], "", "empty"],
+    [[], "x", "empty"],
+    [[inside], "", "only-hidden"],
+    [[inside], "x", "no-match"],
+    // The root folder a `~/` listing carries is not in home, so home is still empty.
+    [[outside], "", "empty"],
+    [[outside], "x", "empty"],
+    [[inside, outside], "", "only-hidden"],
+  ] as const)("a folder listed as %j with %j typed is %s", (entries, fragment, gap) => {
+    expect(composerBrowseGap({ entries }, fragment)).toBe(gap);
   });
 });
 

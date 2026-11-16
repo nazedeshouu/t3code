@@ -39,6 +39,11 @@ export const FilesystemBrowseEntry = Schema.Struct({
   fullPath: TrimmedNonEmptyString,
   /** Set when the request asked for files; an entry without it is a directory. */
   kind: Schema.optional(Schema.Literals(["file", "directory"])),
+  /**
+   * Set on an entry that is not inside `parentPath`. A listing of `~/` carries one: the root
+   * folder that `~/Users/…` is read from, so a client can offer it as `~/Us` is typed.
+   */
+  outsideListing: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 

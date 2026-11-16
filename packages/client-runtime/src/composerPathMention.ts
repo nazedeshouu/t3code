@@ -81,20 +81,40 @@ export function composerMentionPath(fullPath: string, cwd: string | null): strin
 }
 
 /**
- * A browsed directory's entries for the typed fragment: folders first with nothing typed, else
+ * A browsed directory's rows for the typed fragment: folders first with nothing typed, else
  * folders and files together by closeness of name. An entry without a kind is a folder, from a
- * server that lists only those. The one entry a `~/` listing carries from outside it, the root
- * folder `~/Users/…` is read from, answers a typed name (`~/Us`) and is no part of the contents.
+ * server that lists only those. One from outside the folder shows only for a typed name (`~/Us`).
  */
 export function rankComposerBrowseEntries(
-  listing: Pick<FilesystemBrowseResult, "parentPath" | "entries">,
+  listing: Pick<FilesystemBrowseResult, "entries">,
   fragment: string,
 ): ReadonlyArray<FilesystemBrowseEntry> {
   if (fragment.length > 0) return rankPathEntries(listing.entries, fragment);
-  const contents = listing.entries.filter((entry) => entry.fullPath.startsWith(listing.parentPath));
-  return rankPathEntries(contents, fragment).sort(
+  return rankPathEntries(listing.entries.filter(isInListedFolder), fragment).sort(
     (left, right) => Number(left.kind === "file") - Number(right.kind === "file"),
   );
+}
+
+function isInListedFolder(entry: FilesystemBrowseEntry): boolean {
+  return entry.outsideListing !== true;
+}
+
+/** Why a browsed folder has no row to show. */
+export type ComposerBrowseGap =
+  /** The folder holds nothing. */
+  | "empty"
+  /** It holds only dotfiles, which show once a `.` is typed. */
+  | "only-hidden"
+  /** It has entries, and none matches the typed name. */
+  | "no-match";
+
+/** Entries from outside the folder do not count: a home holding nothing is still empty. */
+export function composerBrowseGap(
+  listing: Pick<FilesystemBrowseResult, "entries">,
+  fragment: string,
+): ComposerBrowseGap {
+  if (!listing.entries.some(isInListedFolder)) return "empty";
+  return fragment.length === 0 ? "only-hidden" : "no-match";
 }
 
 /** A bare `@word`'s search results, ranked. */

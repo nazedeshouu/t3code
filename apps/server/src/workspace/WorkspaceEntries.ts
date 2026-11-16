@@ -182,7 +182,12 @@ const rootFolderTowardHome = (
   const [name] = path.relative(root, home).split(path.sep);
   if (!name || name === ".." || homeEntryNames.includes(name)) return undefined;
   if (rankPathEntries([{ name }], typedName).length === 0) return undefined;
-  return { name, fullPath: path.join(root, name), kind: "directory" as const };
+  return {
+    name,
+    fullPath: path.join(root, name),
+    kind: "directory" as const,
+    outsideListing: true,
+  };
 };
 
 const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(function* (

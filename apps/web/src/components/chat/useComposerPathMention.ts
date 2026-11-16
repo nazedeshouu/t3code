@@ -1,5 +1,6 @@
 import {
   type ComposerPathMiss,
+  composerBrowseGap,
   composerBrowsePartialPath,
   composerMentionPath,
   composerPathQueryInside,
@@ -67,6 +68,11 @@ const MENU_ROW_LIMIT = 80;
 const NARROWING_DEBOUNCE_MS = 120;
 const NO_MATCHES = "No matching files or folders.";
 const SEARCH_FAILED = "Couldn't search this project's files.";
+const BROWSE_GAP_TEXT = {
+  empty: "This folder is empty.",
+  "only-hidden": "Only hidden files here. Type . to list them.",
+  "no-match": NO_MATCHES,
+} as const;
 const isBrowseError = Schema.is(FilesystemBrowseError);
 
 const NOTHING: ComposerPathMention = {
@@ -331,12 +337,7 @@ function useDirectoryListing(target: DirectoryTarget | null): ComposerPathMentio
             `${hiddenCount.toLocaleString()}${result.truncated ? "+" : ""} more. Keep typing to narrow.`
           : null,
     },
-    emptyState:
-      result.entries.length === 0
-        ? "This folder is empty."
-        : fragment.length === 0
-          ? "Only hidden files here. Type . to list them."
-          : NO_MATCHES,
+    emptyState: BROWSE_GAP_TEXT[composerBrowseGap(result, fragment)],
   };
 }
 

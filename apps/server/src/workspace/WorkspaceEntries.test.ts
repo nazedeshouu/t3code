@@ -1181,6 +1181,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           name: firstSegment,
           fullPath: path.join(path.resolve("/"), firstSegment),
           kind: "directory",
+          outsideListing: true,
         };
         const browse = (partialPath: string, includeFiles = true) =>
           workspaceEntries
