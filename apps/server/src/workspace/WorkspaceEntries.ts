@@ -257,8 +257,11 @@ export const make = Effect.gen(function* () {
       const directoryEnd = splitsName
         ? typedNameStart(input.partialPath)
         : input.partialPath.length;
+      // A name with no directory before it is looked for in the caller's `cwd`. An empty path
+      // would resolve to this process's own working directory instead.
+      const directoryPath = input.partialPath.slice(0, directoryEnd) || "./";
       const resolvedPath = yield* resolveBrowseTarget(
-        { ...input, partialPath: input.partialPath.slice(0, directoryEnd) },
+        { ...input, partialPath: directoryPath },
         path,
       );
       const walkedName = !listsDirectory && !splitsName;

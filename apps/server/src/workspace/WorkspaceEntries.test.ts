@@ -1231,6 +1231,28 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
+    it.effect("looks for a bare name in the given cwd, never in the server's own directory", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-bare-name-" });
+        yield* writeTextFile(cwd, "notes.md", "");
+        yield* writeTextFile(cwd, "src/index.ts", "");
+
+        const inProject = yield* workspaceEntries.browse({
+          partialPath: "no",
+          cwd,
+          includeFiles: true,
+        });
+        const withoutProject = yield* workspaceEntries
+          .browse({ partialPath: "no", includeFiles: true })
+          .pipe(Effect.flip);
+
+        expect(inProject.parentPath).toBe(cwd);
+        expect(inProject.entries.map((entry) => entry.name)).toEqual(["notes.md"]);
+        expect(withoutProject._tag).toBe("WorkspaceEntriesCurrentProjectRequiredError");
+      }),
+    );
+
     it.effect("marks only a missing directory as missing when browsing fails", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
