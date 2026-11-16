@@ -31,6 +31,6 @@ it.each(THEME_CSS_HOOKS.map((hook) => hook.selector))(
 it.each(THEME_CSS_PROPERTIES.map((entry) => entry.property))(
   "%s is still read in the web source",
   (property) => {
-    expect(source).toMatch(new RegExp(`var\\(\\s*${property}\\b`));
+    expect(source).toMatch(new RegExp(`var\\(\\s*${property}\\s*[,)]`));
   },
 );
