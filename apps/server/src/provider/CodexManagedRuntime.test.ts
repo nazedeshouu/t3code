@@ -201,7 +201,7 @@ it.live.each(
           assert.include(args, "features.multi_agent_v2=false");
           assert.notInclude(effective.config.launchArgs, "model_catalog_json");
           assert.notInclude(effective.config.launchArgs, "x-openai-chatpass-test");
-          assert.include(provider, "supports_websockets=false");
+          assert.include(provider, "supports_websockets=true");
           assert.include(provider, "requires_openai_auth=false");
           for (const secret of ["dummy-owned-access", "dummy-refresh", "ambient-bearer"]) {
             assert.notInclude(effective.config.launchArgs, secret);
