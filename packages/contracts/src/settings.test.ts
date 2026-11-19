@@ -328,6 +328,9 @@ describe("ClientSettings notifications", () => {
   it("keeps slow request warnings on when existing settings omit the preference", () => {
     expect(decodeClientSettings({}).slowRequestWarningsEnabled).toBe(true);
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("slowRequestWarningsEnabled");
+    expect(
+      decodeClientSettingsPatch({ slowRequestWarningsEnabled: false }).slowRequestWarningsEnabled,
+    ).toBe(false);
   });
 });
 

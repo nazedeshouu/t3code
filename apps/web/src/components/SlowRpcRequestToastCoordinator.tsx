@@ -1,4 +1,9 @@
-import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
+import {
+  ensureClientSettingsHydrated,
+  getClientSettings,
+  isClientSettingsHydrated,
+  subscribeClientSettings,
+} from "../hooks/useSettings";
 import { type SlowRpcAckRequest, subscribeSlowRpcAckRequests } from "../rpc/requestLatencyState";
 import { toastManager } from "./ui/toast";
 
@@ -34,9 +39,13 @@ export function startSlowRpcRequestToasts(): () => void {
   let toastId: ReturnType<typeof toastManager.add> | null = null;
   let slowRequests: ReadonlyArray<SlowRpcAckRequest> = [];
   let enabled = getClientSettings().slowRequestWarningsEnabled;
+  // Until saved settings load, the default (on) would override a saved "off".
+  let settingsLoaded = isClientSettingsHydrated();
+  let stopped = false;
 
   const sync = () => {
-    if (!enabled || slowRequests.length === 0) {
+    if (stopped) return;
+    if (!settingsLoaded || !enabled || slowRequests.length === 0) {
       if (toastId !== null) {
         toastManager.close(toastId);
         toastId = null;
@@ -75,7 +84,18 @@ export function startSlowRpcRequestToasts(): () => void {
     sync();
   });
 
+  if (!settingsLoaded) {
+    // A failed load keeps the default, so warnings still work without saved settings.
+    const onSettingsSettled = () => {
+      settingsLoaded = true;
+      enabled = getClientSettings().slowRequestWarningsEnabled;
+      sync();
+    };
+    void ensureClientSettingsHydrated().then(onSettingsSettled, onSettingsSettled);
+  }
+
   return () => {
+    stopped = true;
     unsubscribeRequests();
     unsubscribeSettings();
     if (toastId !== null) toastManager.close(toastId);

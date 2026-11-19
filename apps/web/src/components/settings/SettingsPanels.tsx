@@ -827,9 +827,7 @@ export function GeneralSettingsPanel() {
         />
         <SettingsRow
           {...setting("slow-request-warnings")}
-          description={
-            <T>Show a toast when an environment takes more than 15 seconds to answer a request.</T>
-          }
+          description={<T>Show a toast when an environment is slow to answer a request.</T>}
           control={
             <Switch
               checked={settings.slowRequestWarningsEnabled}

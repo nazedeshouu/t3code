@@ -695,7 +695,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "slow-request-warnings",
     title: msg("Slow request warnings"),
     to: "/settings/general",
-    searchTerms: ["notification toast slow request latency waiting timeout server connection"],
+    searchTerms: [
+      "some requests are slow notification toast latency waiting timeout server connection",
+    ],
   },
   {
     id: "language",

@@ -27,7 +27,7 @@
   "2c1c93a646bbea6e": "Language",
   "c7b0bcb64f48db85": "Timestamp format",
   "cbf6a6bbc17e75e1": "Show a toast when another thread finishes, fails, or needs input or approval while this app has focus.",
-  "6efb1bdb248c7638": "Show a toast when an environment takes more than 15 seconds to answer a request.",
+  "9872424502e68866": "Show a toast when an environment is slow to answer a request.",
   "83ca942c7163904f": "Combine matching repositories across environments.",
   "609da998ca13521e": "Order of projects in the sidebar project picker and command palette.",
   "b4c541137a76b351": "Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you. The boring sidebar in Labs has no Working section.",

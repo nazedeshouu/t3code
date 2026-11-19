@@ -1,10 +1,11 @@
 import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const { add, close, settingsListeners, settingsState, update } = vi.hoisted(() => ({
+const { add, close, hydration, settingsListeners, settingsState, update } = vi.hoisted(() => ({
   add: vi.fn(() => "slow-requests"),
   close: vi.fn(),
   update: vi.fn(),
+  hydration: { loaded: true, finish: () => {} },
   settingsListeners: new Set<() => void>(),
   settingsState: { current: null as ClientSettings | null },
 }));
@@ -12,6 +13,11 @@ const { add, close, settingsListeners, settingsState, update } = vi.hoisted(() =
 vi.mock("./ui/toast", () => ({ toastManager: { add, close, update } }));
 vi.mock("../hooks/useSettings", () => ({
   getClientSettings: () => settingsState.current,
+  isClientSettingsHydrated: () => hydration.loaded,
+  ensureClientSettingsHydrated: () =>
+    new Promise<void>((resolve) => {
+      hydration.finish = resolve;
+    }),
   subscribeClientSettings: (listener: () => void) => {
     settingsListeners.add(listener);
     return () => settingsListeners.delete(listener);
@@ -39,11 +45,13 @@ describe("startSlowRpcRequestToasts", () => {
     vi.clearAllMocks();
     settingsListeners.clear();
     settingsState.current = DEFAULT_CLIENT_SETTINGS;
+    hydration.loaded = true;
   });
 
   afterEach(() => {
     stop();
     acknowledgeRpcRequest("request-1");
+    acknowledgeRpcRequest("request-2");
     vi.useRealTimers();
   });
 
@@ -59,8 +67,33 @@ describe("startSlowRpcRequestToasts", () => {
     setSlowRequestWarnings(false);
     stop = startSlowRpcRequestToasts();
     makeRequestSlow("request-1");
+    makeRequestSlow("request-2");
 
     expect(add).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("waits for saved settings before warning", async () => {
+    hydration.loaded = false;
+    stop = startSlowRpcRequestToasts();
+    makeRequestSlow("request-1");
+    expect(add).not.toHaveBeenCalled();
+
+    settingsState.current = { ...DEFAULT_CLIENT_SETTINGS, slowRequestWarningsEnabled: false };
+    hydration.finish();
+    await Promise.resolve();
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it("warns once saved settings load with warnings on", async () => {
+    hydration.loaded = false;
+    stop = startSlowRpcRequestToasts();
+    makeRequestSlow("request-1");
+    expect(add).not.toHaveBeenCalled();
+
+    hydration.finish();
+    await Promise.resolve();
+    expect(add).toHaveBeenCalledOnce();
   });
 
   it("closes the open warning when warnings are turned off", () => {
@@ -75,6 +108,7 @@ describe("startSlowRpcRequestToasts", () => {
     setSlowRequestWarnings(false);
     stop = startSlowRpcRequestToasts();
     makeRequestSlow("request-1");
+    expect(add).not.toHaveBeenCalled();
     setSlowRequestWarnings(true);
 
     expect(add).toHaveBeenCalledOnce();
