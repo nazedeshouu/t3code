@@ -5,7 +5,7 @@ const { add, close, hydration, settingsListeners, settingsState, update } = vi.h
   add: vi.fn(() => "slow-requests"),
   close: vi.fn(),
   update: vi.fn(),
-  hydration: { loaded: true, finish: () => {} },
+  hydration: { loaded: true, finish: () => {}, fail: () => {} },
   settingsListeners: new Set<() => void>(),
   settingsState: { current: null as ClientSettings | null },
 }));
@@ -15,8 +15,9 @@ vi.mock("../hooks/useSettings", () => ({
   getClientSettings: () => settingsState.current,
   isClientSettingsHydrated: () => hydration.loaded,
   ensureClientSettingsHydrated: () =>
-    new Promise<void>((resolve) => {
+    new Promise<void>((resolve, reject) => {
       hydration.finish = resolve;
+      hydration.fail = () => reject(new Error("settings read failed"));
     }),
   subscribeClientSettings: (listener: () => void) => {
     settingsListeners.add(listener);
@@ -79,7 +80,8 @@ describe("startSlowRpcRequestToasts", () => {
     makeRequestSlow("request-1");
     expect(add).not.toHaveBeenCalled();
 
-    settingsState.current = { ...DEFAULT_CLIENT_SETTINGS, slowRequestWarningsEnabled: false };
+    // The store publishes the saved value before its load settles.
+    setSlowRequestWarnings(false);
     hydration.finish();
     await Promise.resolve();
     expect(add).not.toHaveBeenCalled();
@@ -94,6 +96,27 @@ describe("startSlowRpcRequestToasts", () => {
     hydration.finish();
     await Promise.resolve();
     expect(add).toHaveBeenCalledOnce();
+  });
+
+  it("keeps warnings on when saved settings fail to load", async () => {
+    hydration.loaded = false;
+    stop = startSlowRpcRequestToasts();
+    makeRequestSlow("request-1");
+
+    hydration.fail();
+    await Promise.resolve();
+    expect(add).toHaveBeenCalledOnce();
+  });
+
+  it("stays quiet when stopped before saved settings load", async () => {
+    hydration.loaded = false;
+    stop = startSlowRpcRequestToasts();
+    makeRequestSlow("request-1");
+    stop();
+
+    hydration.finish();
+    await Promise.resolve();
+    expect(add).not.toHaveBeenCalled();
   });
 
   it("closes the open warning when warnings are turned off", () => {
