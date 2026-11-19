@@ -487,6 +487,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.inAppNotificationsEnabled !== DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled
       ? ["In-app notifications"]
       : []),
+    ...(settings.slowRequestWarningsEnabled !== DEFAULT_UNIFIED_SETTINGS.slowRequestWarningsEnabled
+      ? ["Slow request warnings"]
+      : []),
     ...(settings.sidebarProjectGroupingMode !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
       ? ["Project Grouping"]
       : []),
@@ -658,6 +661,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
       inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
+      slowRequestWarningsEnabled: DEFAULT_UNIFIED_SETTINGS.slowRequestWarningsEnabled,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       persistComposerContextStrip: DEFAULT_UNIFIED_SETTINGS.persistComposerContextStrip,
       diffFilesCollapsed: DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed,
@@ -818,6 +822,19 @@ export function GeneralSettingsPanel() {
               checked={settings.inAppNotificationsEnabled}
               onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
               aria-label={gt("In-app notifications")}
+            />
+          }
+        />
+        <SettingsRow
+          {...setting("slow-request-warnings")}
+          description={
+            <T>Show a toast when an environment takes more than 15 seconds to answer a request.</T>
+          }
+          control={
+            <Switch
+              checked={settings.slowRequestWarningsEnabled}
+              onCheckedChange={(checked) => updateSettings({ slowRequestWarningsEnabled: checked })}
+              aria-label={gt("Slow request warnings")}
             />
           }
         />
