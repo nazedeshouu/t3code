@@ -51,7 +51,13 @@ export function ComposerCommandMenuLayer(props: {
       const composerOverlap = rootFontSizePx + 1;
       const spaceAbove = rect.top + composerOverlap;
       const bottom = window.innerHeight - spaceAbove;
-      const floorHeight = Math.max(96, spaceAbove - 24);
+      // The menu grows up to the chat header and stops, so the thread's title stays readable
+      // above a long list. Without a header it keeps a margin from the window's top.
+      const header = anchor
+        .closest("[data-chat-column]")
+        ?.querySelector<HTMLElement>("[data-chat-header]");
+      const ceiling = Math.max(24, (header?.getBoundingClientRect().bottom ?? 0) + 8);
+      const floorHeight = Math.max(96, spaceAbove - ceiling);
       const maxHeight = canOverflowTop ? floorHeight : Math.min(floorHeight, window.innerHeight);
       const next = {
         // With too little room above, the menu slides down over the composer instead of past the window top.

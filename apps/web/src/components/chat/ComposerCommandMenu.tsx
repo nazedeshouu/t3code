@@ -1,4 +1,5 @@
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import type { TextRange } from "@t3tools/shared/pathEntryMatch";
 import type { ComposerPathSearchTarget } from "@t3tools/client-runtime/state/threads";
 import {
   resolveProviderSkillSourceKind,
@@ -29,10 +30,16 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
+import { Kbd } from "../ui/kbd";
 import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PierreEntryIcon } from "./PierreEntryIcon";
+import type {
+  ComposerPathBrowse,
+  PathEntryItem,
+  PathMentionTarget,
+} from "./useComposerPathMention";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ComposerBanner } from "./ComposerBanner";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
@@ -45,6 +52,23 @@ export type ComposerCommandItem =
       pathKind: ProjectEntry["kind"];
       searchTarget: ComposerPathSearchTarget;
       label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "path-entry";
+      /** What a mention of this entry carries: project-relative inside the project, else absolute. */
+      path: string;
+      pathKind: ProjectEntry["kind"];
+      /** On a folder, choosing it opens the folder by rewriting the `@` query to this. Null mentions `path`. */
+      opensQuery: string | null;
+      /** The query this row answered. It is chosen only while the composer still asks exactly that. */
+      source: PathMentionTarget;
+      /** Left from the previous query while the next result loads: shown dimmed, not selectable. */
+      stale: boolean;
+      label: string;
+      /** The typed characters found in `label`; null leaves the label plain. */
+      labelMatches: ReadonlyArray<TextRange> | null;
       description: string;
     }
   | {
@@ -112,6 +136,10 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   isLoading: boolean;
   triggerKind: ComposerTriggerKind | null;
   emptyStateText?: string;
+  /** Set while `@` browses a directory. */
+  pathBrowse?: ComposerPathBrowse | null;
+  /** The empty state is an error Enter can't act on; say how to keep the text instead. */
+  showsEscapeHint?: boolean;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -142,10 +170,18 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         className="flex min-h-0 w-full flex-col overflow-hidden pb-(--chat-composer-attachment-overlap) **:data-[slot=command-item]:rounded-lg **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
         data-composer-command-drawer="true"
       >
+        {props.pathBrowse?.currentFolder ? (
+          <CurrentFolderRow
+            folder={props.pathBrowse.currentFolder}
+            showSpaceHint={props.pathBrowse.spaceMentionsFolder}
+            onSelect={props.onSelect}
+          />
+        ) : null}
         {props.items.length > 0 ? (
           <CommandList
             id={props.listId}
             aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
+            aria-busy={props.isLoading}
             className="max-h-72 min-h-0 scroll-pb-6"
           >
             <CommandGroup>
@@ -162,16 +198,23 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                 />
               ))}
             </CommandGroup>
+            {props.pathBrowse?.footnote ? (
+              <p className="px-3 pt-1 pb-2 text-secondary-label text-xs">
+                {props.pathBrowse.footnote}
+              </p>
+            ) : null}
           </CommandList>
         ) : (
-          <div className="px-5 pt-3.5 pb-7">
-            <p className="text-secondary-label text-xs">
+          <div className="flex items-baseline gap-3 px-5 pt-3.5 pb-7">
+            <p className="min-w-0 text-secondary-label text-xs">
               {props.isLoading
                 ? props.triggerKind === "skill" || props.triggerKind === "slash-command"
                   ? "Searching workspace skills..."
                   : props.triggerKind === "pull-request"
                     ? "Finding pull request..."
-                    : "Searching workspace files..."
+                    : props.pathBrowse
+                      ? "Reading folder..."
+                      : "Searching workspace files..."
                 : (props.emptyStateText ??
                   (props.triggerKind === "skill"
                     ? "No skills found. Try / to browse provider commands."
@@ -179,6 +222,12 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                       ? "No matching files or folders."
                       : "No matching command."))}
             </p>
+            {props.showsEscapeHint && !props.isLoading ? (
+              <span className="ms-auto flex shrink-0 items-center gap-1.5 text-secondary-label text-xs">
+                <Kbd variant="outline">Esc</Kbd>
+                <span>keep as text</span>
+              </span>
+            ) : null}
           </div>
         )}
       </ComposerBanner.Surface>
@@ -215,10 +264,13 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     <CommandItem
       render={<div id={props.optionId} />}
       aria-selected={props.isActive}
+      disabled={!isComposerItemSelectable(props.item)}
       value={props.item.id}
       data-composer-item-id={props.item.id}
       active={props.isActive}
-      onMouseMove={() => {
+      onMouseMove={(event) => {
+        // Rows sliding under a resting pointer also fire this; only a real move takes the highlight.
+        if (event.movementX === 0 && event.movementY === 0) return;
         if (!props.isActive) props.onHighlight(props.item.id);
       }}
       onMouseDown={(event) => {
@@ -228,7 +280,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         props.onSelect(props.item);
       }}
     >
-      {props.item.type === "path" ? (
+      {props.item.type === "path" || props.item.type === "path-entry" ? (
         <PierreEntryIcon
           pathValue={props.item.path}
           kind={props.item.pathKind}
@@ -263,8 +315,15 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         />
       ) : null}
       <span className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="min-w-0 max-w-[45%] shrink-0 truncate font-sans text-xs font-medium">
-          {isSlashSkill ? (
+        <span
+          className={cn(
+            "min-w-0 shrink-0 truncate font-sans text-xs font-medium",
+            props.item.description ? "max-w-[45%]" : "max-w-full",
+          )}
+        >
+          {props.item.type === "path-entry" ? (
+            <PathEntryLabel item={props.item} />
+          ) : isSlashSkill ? (
             <>
               <span className="text-secondary-label">/skill:</span>
               {formatProviderSkillDisplayName(isSlashSkill)}
@@ -297,6 +356,76 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     </CommandItem>
   );
 });
+
+/** A row left over from the previous `@` query waits, unselectable, for the next result. */
+export function isComposerItemSelectable(item: ComposerCommandItem): boolean {
+  return item.type !== "path-entry" || !item.stale;
+}
+
+/** The folder being browsed, above its entries. Choosing it mentions the folder itself. */
+function CurrentFolderRow(props: {
+  folder: PathEntryItem;
+  showSpaceHint: boolean;
+  onSelect: (item: ComposerCommandItem) => void;
+}) {
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      data-composer-current-folder="true"
+      className="group flex w-full shrink-0 cursor-pointer items-center gap-3 px-5 pt-3 pb-1.5 text-left text-xs"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => props.onSelect(props.folder)}
+    >
+      <span className="min-w-0 truncate text-secondary-label group-hover:text-foreground">
+        {props.folder.label}
+      </span>
+      <span
+        className={cn(
+          "ms-auto flex shrink-0 items-center gap-1.5 text-secondary-label",
+          // With a name being typed, Space belongs to the name; the row is still clickable.
+          !props.showSpaceHint && "opacity-0 group-hover:opacity-100",
+        )}
+      >
+        Mention this folder
+        {props.showSpaceHint ? <Kbd variant="outline">Space</Kbd> : null}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * An entry's name with the typed characters emphasised and the rest receding, so the closest
+ * matches stand out down the list. Folders end in a quiet slash.
+ */
+function PathEntryLabel({ item }: { item: PathEntryItem }) {
+  const parts: Array<{ text: string; matched: boolean }> = [];
+  let cursor = 0;
+  for (const range of item.labelMatches ?? []) {
+    if (range.start > cursor) {
+      parts.push({ text: item.label.slice(cursor, range.start), matched: false });
+    }
+    parts.push({ text: item.label.slice(range.start, range.end), matched: true });
+    cursor = range.end;
+  }
+  if (cursor < item.label.length) parts.push({ text: item.label.slice(cursor), matched: false });
+  return (
+    <>
+      {parts.map((part, index) => (
+        <span
+          // oxlint-disable-next-line react/no-array-index-key -- parts are positional slices of one label
+          key={index}
+          className={
+            part.matched ? "font-semibold" : item.labelMatches === null ? undefined : "opacity-70"
+          }
+        >
+          {part.text}
+        </span>
+      ))}
+      {item.opensQuery !== null ? <span className="text-secondary-label">/</span> : null}
+    </>
+  );
+}
 
 export function composerSuggestionOptionId(listId: string, itemId: string): string {
   // JSON escapes lone UTF-16 surrogates before URI encoding without losing identity.

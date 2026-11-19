@@ -3,7 +3,9 @@
 // stay pending so nothing retries on timers. Everything above the wire is the app's own.
 import {
   type AssetCreateUrlResult,
+  type AuthEnvironmentScope,
   AuthStandardClientScopes,
+  authScopeResponse,
   EnvironmentId,
   EventId,
   ExecutionEnvironmentDescriptor,
@@ -553,6 +555,9 @@ export const fakeDriver = {
 };
 export type FakeDriver = typeof fakeDriver;
 
+/** What the session is told it may do; null for a standard client's scopes. */
+let sessionPermissions: ReadonlyArray<AuthEnvironmentScope> | null = null;
+
 const realFetch = globalThis.fetch;
 const encodedDescriptor = Schema.encodeSync(ExecutionEnvironmentDescriptor)(
   Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor)(descriptor),
@@ -594,7 +599,9 @@ export function installFakeEnvironment(
       return json({
         authenticated: true,
         auth,
-        scopes: AuthStandardClientScopes,
+        ...(sessionPermissions === null
+          ? { scopes: AuthStandardClientScopes }
+          : authScopeResponse(sessionPermissions)),
         sessionMethod: "browser-session-cookie",
         expiresAt: "2099-01-01T00:00:00.000Z",
       });
@@ -657,6 +664,22 @@ export function dispatchedCommands(): ReadonlyArray<OrchestrationV2Command> {
 type ThreadEvent = Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }>["event"];
 
 /** Answers one RPC method with `handler` until disposed. */
+/**
+ * Limits what the session is told it may do until disposed. The app remembers a session between
+ * tests, so the caller has it ask again on each change.
+ */
+export function limitSessionPermissions(
+  permissions: ReadonlyArray<AuthEnvironmentScope>,
+  onChange: () => void,
+): Disposable {
+  const serve = (next: typeof sessionPermissions) => {
+    sessionPermissions = next;
+    onChange();
+  };
+  serve(permissions);
+  return { [Symbol.dispose]: () => serve(null) };
+}
+
 export function answerRpc(method: string, handler: (input: never) => unknown): Disposable {
   const previous = handlers[method];
   handlers[method] = handler;

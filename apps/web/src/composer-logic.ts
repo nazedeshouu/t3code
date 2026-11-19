@@ -30,6 +30,8 @@ export interface ComposerTrigger {
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  /** A path query typed as `@"…`, which runs on through spaces until its closing quote. */
+  quoted?: true;
 }
 
 export function isPathSuggestionCurrent(
@@ -255,8 +257,35 @@ export function collapseExpandedComposerCursor(
   return collapsedCursor;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+/**
+ * Where an unclosed `@"` before the cursor starts, or -1. A path with spaces is typed inside the
+ * quote, so the whole of it is one `@` query rather than ending at its first space.
+ */
+function openQuotedMentionStart(text: string, cursor: number): number {
+  if (cursor < 2) return -1;
+  const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
+  const start = text.lastIndexOf('@"', cursor - 2);
+  if (start < lineStart) return -1;
+  if (start > 0 && !isWhitespace(text[start - 1] ?? "")) return -1;
+  return text.slice(start + 2, cursor).includes('"') ? -1 : start;
+}
+
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  options?: { readonly quotedPaths?: boolean },
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
+  const quotedStart = options?.quotedPaths ? openQuotedMentionStart(text, cursor) : -1;
+  if (quotedStart >= 0) {
+    return {
+      kind: "path",
+      query: text.slice(quotedStart + 2, cursor),
+      rangeStart: quotedStart,
+      rangeEnd: cursor,
+      quoted: true,
+    };
+  }
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
   if (token.startsWith("/")) {

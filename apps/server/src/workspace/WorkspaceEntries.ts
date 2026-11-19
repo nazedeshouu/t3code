@@ -23,6 +23,7 @@ import type {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { rankPathEntries } from "@t3tools/shared/pathEntryMatch";
 import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -66,6 +67,11 @@ export class WorkspaceEntriesReadDirectoryError extends Schema.TaggedError<Works
 ) {
   get pathMissing(): boolean {
     return (this.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+  }
+
+  get permissionDenied(): boolean {
+    const code = (this.cause as NodeJS.ErrnoException | undefined)?.code;
+    return code === "EACCES" || code === "EPERM";
   }
 
   override get message(): string {
@@ -124,6 +130,64 @@ const IGNORE_CHECK_CHUNK_SIZE = 1000;
 /** Children classified at once when listing a folder; each symlink costs a realpath and a stat. */
 const SYMLINK_RESOLVE_BATCH_SIZE = 64;
 
+/** Entries one file-inclusive browse returns; the typed name narrows a larger directory first. */
+const BROWSE_WITH_FILES_LIMIT = 2000;
+
+/** Where the name being typed starts: just past the path's last separator. */
+const typedNameStart = (partialPath: string) => partialPath.search(/[^\\/]*$/);
+
+const isAtOrUnder = (path: Path.Path, parent: string, child: string) => {
+  const relative = path.relative(parent, child);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+
+/**
+ * Expands `~/`. People type `~/Users/me/x` when they mean `/Users/me/x`, so that path is read
+ * from the root instead, as long as home has no such folder of its own and the root's one leads
+ * to home or lies inside it. This holds mid-typing too: `~/Users/` already lists `/Users`.
+ */
+const expandBrowseHomePath = Effect.fn("WorkspaceEntries.expandBrowseHomePath")(function* (
+  partialPath: string,
+  home: string,
+  path: Path.Path,
+) {
+  const expanded = expandHomePath(partialPath, home);
+  if (!partialPath.startsWith("~/")) return expanded;
+  const typed = partialPath.slice(2);
+  const typedDirectory = typed.slice(0, typedNameStart(typed));
+  const fromRoot = path.resolve("/", typedDirectory);
+  if (!isAtOrUnder(path, fromRoot, home) && !isAtOrUnder(path, home, fromRoot)) {
+    return expanded;
+  }
+  const underHome = yield* Effect.promise(() =>
+    NodeFSP.stat(path.resolve(home, typedDirectory)).catch(() => undefined),
+  );
+  return underHome?.isDirectory() ? expanded : path.resolve("/", typed);
+});
+
+/**
+ * The root folder that leads to home: `Users` for `/Users/me`. `expandBrowseHomePath` reads
+ * `~/Users/…` from the root, so a listing of `~/` carries this folder to offer while `~/Us` is
+ * typed. Left out when home has an entry of that name, or the typed name does not match it.
+ */
+const rootFolderTowardHome = (
+  typedName: string,
+  homeEntryNames: ReadonlyArray<string>,
+  home: string,
+  path: Path.Path,
+) => {
+  const root = path.resolve("/");
+  const [name] = path.relative(root, home).split(path.sep);
+  if (!name || name === ".." || homeEntryNames.includes(name)) return undefined;
+  if (rankPathEntries([{ name }], typedName).length === 0) return undefined;
+  return {
+    name,
+    fullPath: path.join(root, name),
+    kind: "directory" as const,
+    outsideListing: true,
+  };
+};
+
 const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(function* (
   input: FilesystemBrowseInput,
   path: Path.Path,
@@ -138,7 +202,9 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
   }
 
   if (!isExplicitRelativePath(input.partialPath)) {
-    return path.resolve(expandHomePath(input.partialPath, yield* HostProcess.HomeDirectory));
+    return path.resolve(
+      yield* expandBrowseHomePath(input.partialPath, yield* HostProcess.HomeDirectory, path),
+    );
   }
 
   if (!input.cwd) {
@@ -205,10 +271,26 @@ export const make = Effect.gen(function* () {
 
   const browse: WorkspaceEntries["Service"]["browse"] = Effect.fn("WorkspaceEntries.browse")(
     function* (input) {
-      const resolvedInputPath = yield* resolveBrowseTarget(input, path);
-      const endsWithSeparator = /[\\/]$/.test(input.partialPath) || input.partialPath === "~";
-      const parentPath = endsWithSeparator ? resolvedInputPath : path.dirname(resolvedInputPath);
-      const prefix = endsWithSeparator ? "" : path.basename(resolvedInputPath);
+      const listsDirectory = /[\\/]$/.test(input.partialPath) || input.partialPath === "~";
+      // A file browse matches the typed name against the entries, so the name comes off before
+      // the path resolves; resolving would walk a name of `.` or `..`. The directory picker
+      // keeps resolving the whole path.
+      const splitsName = input.includeFiles === true && !listsDirectory;
+      const directoryEnd = splitsName
+        ? typedNameStart(input.partialPath)
+        : input.partialPath.length;
+      // A name with no directory before it is looked for in the caller's `cwd`. An empty path
+      // would resolve to this process's own working directory instead.
+      const directoryPath = input.partialPath.slice(0, directoryEnd) || "./";
+      const resolvedPath = yield* resolveBrowseTarget(
+        { ...input, partialPath: directoryPath },
+        path,
+      );
+      const walkedName = !listsDirectory && !splitsName;
+      const parentPath = walkedName ? path.dirname(resolvedPath) : resolvedPath;
+      const prefix = walkedName
+        ? path.basename(resolvedPath)
+        : input.partialPath.slice(directoryEnd);
 
       const dirents = yield* Effect.tryPromise({
         try: () => NodeFSP.readdir(parentPath, { withFileTypes: true }),
@@ -220,34 +302,73 @@ export const make = Effect.gen(function* () {
             cause,
           }),
       }).pipe(
+        // The directory picker shows an unreadable folder as empty. A file browse reports it.
         Effect.catchIf(
-          (error) => {
-            const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
-            return code === "EACCES" || code === "EPERM";
-          },
+          (error) => error.permissionDenied && !input.includeFiles,
           () => Effect.succeed([]),
         ),
       );
 
-      const showHidden = endsWithSeparator || prefix.startsWith(".");
-      const lowerPrefix = prefix.toLowerCase();
-      const entries: Array<{ readonly name: string; readonly fullPath: string }> = [];
-      for (const dirent of dirents) {
-        if (
-          dirent.isDirectory() &&
-          dirent.name.toLowerCase().startsWith(lowerPrefix) &&
-          (showHidden || !dirent.name.startsWith("."))
-        ) {
-          entries.push({
-            name: dirent.name,
-            fullPath: path.join(parentPath, dirent.name),
-          });
-        }
+      if (!input.includeFiles) {
+        const showHidden = listsDirectory || prefix.startsWith(".");
+        const lowerPrefix = prefix.toLowerCase();
+        return {
+          parentPath,
+          entries: dirents
+            .filter(
+              (dirent) =>
+                dirent.isDirectory() &&
+                dirent.name.toLowerCase().startsWith(lowerPrefix) &&
+                (showHidden || !dirent.name.startsWith(".")),
+            )
+            .map((dirent) => ({ name: dirent.name, fullPath: path.join(parentPath, dirent.name) }))
+            .toSorted((left, right) => left.name.localeCompare(right.name)),
+        };
       }
 
+      // Narrowing happens before the cap, so a typed name reaches entries a full listing cuts.
+      const matches =
+        prefix.length > 0
+          ? rankPathEntries(dirents, prefix)
+          : dirents.toSorted((left, right) =>
+              left.name.localeCompare(right.name, undefined, { numeric: true }),
+            );
+      const listed = matches.slice(0, BROWSE_WITH_FILES_LIMIT);
+      const entries: Array<FilesystemBrowseResult["entries"][number]> = [];
+      for (let offset = 0; offset < listed.length; offset += SYMLINK_RESOLVE_BATCH_SIZE) {
+        const batch = listed.slice(offset, offset + SYMLINK_RESOLVE_BATCH_SIZE);
+        const kinds = yield* Effect.promise(() =>
+          Promise.all(
+            batch.map(async (dirent) => {
+              if (dirent.isDirectory()) return "directory" as const;
+              if (dirent.isFile()) return "file" as const;
+              if (!dirent.isSymbolicLink()) return undefined;
+              const stat = await NodeFSP.stat(path.join(parentPath, dirent.name)).catch(
+                () => undefined,
+              );
+              return stat?.isDirectory() ? "directory" : stat?.isFile() ? "file" : undefined;
+            }),
+          ),
+        );
+        batch.forEach((dirent, index) => {
+          const kind = kinds[index];
+          if (kind === undefined) return;
+          entries.push({ name: dirent.name, fullPath: path.join(parentPath, dirent.name), kind });
+        });
+      }
+      if (directoryPath === "~/") {
+        const towardHome = rootFolderTowardHome(
+          prefix,
+          dirents.map((dirent) => dirent.name),
+          yield* HostProcess.HomeDirectory,
+          path,
+        );
+        if (towardHome) entries.push(towardHome);
+      }
       return {
         parentPath,
-        entries: entries.toSorted((left, right) => left.name.localeCompare(right.name)),
+        entries,
+        ...(matches.length > listed.length ? { truncated: true } : {}),
       };
     },
   );

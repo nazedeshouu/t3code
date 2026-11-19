@@ -158,6 +158,8 @@ export interface ComposerPromptEditorHandle {
     contextIds: string[];
   };
   isCaretOnVisualEdge: (edge: "start" | "end") => boolean;
+  /** Breaks the line at the caret, as a plain Enter that nothing else took does. */
+  insertNewline: () => void;
 }
 
 export interface ComposerPromptEditorProps {
@@ -646,6 +648,48 @@ function taskInputRule(type: NodeType): InputRule {
     find: rule.find,
     handler: (props) =>
       props.state.doc.resolve(props.range.from).depth === 1 ? rule.handler(props) : null,
+  });
+}
+
+function isInListItem(view: EditorView, richText: boolean): boolean {
+  const instance = (view.dom as TiptapEditorHTMLElement).editor;
+  return (
+    richText &&
+    instance !== undefined &&
+    (instance.isActive("taskItem") || instance.isActive("listItem"))
+  );
+}
+
+/** A plain Enter that no composer command took: splits a list item, leaves an empty quote, or breaks the block. */
+function insertNewline(view: EditorView, richText: boolean): boolean {
+  const instance = (view.dom as TiptapEditorHTMLElement).editor;
+  if (
+    instance &&
+    isInListItem(view, richText) &&
+    splitOrLiftListItem(instance, collapseShownMarkdownSource)
+  ) {
+    return true;
+  }
+  if (
+    richText &&
+    instance &&
+    hasAncestor(view.state.selection.$from, "blockquote") &&
+    view.state.selection.$from.parent.content.size === 0 &&
+    instance.commands.lift("blockquote")
+  ) {
+    return true;
+  }
+  // Parse shown Markdown first, or the split leaves each half with one delimiter.
+  if (instance) {
+    return instance
+      .chain()
+      .command(collapseShownMarkdownSource)
+      .command(({ state, dispatch }) => splitBlockKeepMarks(state, dispatch))
+      .scrollIntoView()
+      .run();
+  }
+  return splitBlockKeepMarks(view.state, (tr) => {
+    view.dispatch(tr.scrollIntoView());
   });
 }
 
@@ -1315,44 +1359,14 @@ function ComposerPromptEditorTiptapInner(
           }
           const handler = readCallbacks().onCommandKeyDown;
           if (event.key === "Enter") {
-            const instance = (view.dom as TiptapEditorHTMLElement).editor;
-            const isTaskItem = richText && (instance?.isActive("taskItem") ?? false);
-            const isListItem = richText && (instance?.isActive("listItem") ?? false);
-            const handled = handler?.("Enter", event, isTaskItem || isListItem) ?? false;
+            const handled = handler?.("Enter", event, isInListItem(view, richText)) ?? false;
             if (handled) {
               event.preventDefault();
               event.stopPropagation();
               return true;
             }
             event.preventDefault();
-            if (
-              (isTaskItem || isListItem) &&
-              instance &&
-              splitOrLiftListItem(instance, collapseShownMarkdownSource)
-            ) {
-              return true;
-            }
-            if (
-              richText &&
-              instance &&
-              hasAncestor(view.state.selection.$from, "blockquote") &&
-              view.state.selection.$from.parent.content.size === 0 &&
-              instance.commands.lift("blockquote")
-            ) {
-              return true;
-            }
-            // Parse shown Markdown first, or the split leaves each half with one delimiter.
-            if (instance) {
-              return instance
-                .chain()
-                .command(collapseShownMarkdownSource)
-                .command(({ state, dispatch }) => splitBlockKeepMarks(state, dispatch))
-                .scrollIntoView()
-                .run();
-            }
-            return splitBlockKeepMarks(view.state, (tr) => {
-              view.dispatch(tr.scrollIntoView());
-            });
+            return insertNewline(view, richText);
           }
           if (!handler) return false;
           const handled = handler(event.key, event);
@@ -1786,6 +1800,9 @@ function ComposerPromptEditorTiptapInner(
         }
       },
       readSnapshot,
+      insertNewline: () => {
+        if (editor) insertNewline(editor.view, richText);
+      },
       isCaretOnVisualEdge: (edge) => {
         const snapshot = readSnapshot();
         if (snapshot.value.length === 0) return true;

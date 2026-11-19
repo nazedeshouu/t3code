@@ -1,8 +1,9 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, WS_METHODS } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -16,6 +17,7 @@ import { useUiStateStore } from "~/uiStateStore";
 import {
   ENVIRONMENT_ID,
   PROJECT_ID,
+  answerRpc,
   installFakeEnvironment,
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
@@ -39,13 +41,14 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// One shell subscription serves the whole file, so every test names the same projects.
+const EXTRA_PROJECTS = [
+  { id: ProjectId.make("project-alpha"), title: "alpha" },
+  { id: ProjectId.make("project-beta"), title: "beta" },
+];
+
 it("the new-thread project picker follows the manual sidebar project order", async () => {
-  using _environment = installFakeEnvironment([], {
-    extraProjects: [
-      { id: ProjectId.make("project-alpha"), title: "alpha" },
-      { id: ProjectId.make("project-beta"), title: "beta" },
-    ],
-  });
+  using _environment = installFakeEnvironment([], { extraProjects: EXTRA_PROJECTS });
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -91,4 +94,58 @@ it("the new-thread project picker follows the manual sidebar project order", asy
       "Add project",
     ]);
   });
+});
+
+it("moving a draft to another project takes the old project's @ rows off offer", async () => {
+  using _environment = installFakeEnvironment([], { extraProjects: EXTRA_PROJECTS });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  let releaseAlpha = () => {};
+  const alphaListed = new Promise<void>((resolve) => {
+    releaseAlpha = resolve;
+  });
+  const listing = (cwd: string, name: string) => ({
+    parentPath: cwd,
+    entries: [{ name, fullPath: `${cwd}/${name}`, kind: "file" as const }],
+  });
+  using _browse = answerRpc(WS_METHODS.filesystemBrowse, ({ cwd }: { readonly cwd: string }) =>
+    cwd === "/workspace/alpha"
+      ? Effect.promise(() => alphaListed).pipe(Effect.as(listing(cwd, "theirs.md")))
+      : Effect.succeed(listing(cwd, "ours.md")),
+  );
+  const draftId = DraftId.make("draft-moved-project");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId);
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = page.getByTestId("composer-editor");
+  const row = (name: string) => page.getByRole("option", { name, exact: true });
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+  await userEvent.click(editor);
+  await userEvent.keyboard("@");
+  await expect.element(row("ours.md")).toHaveAttribute("aria-selected", "true");
+
+  // The same composer now asks the same text of another project, whose listing is slow.
+  const projectPicker = document.querySelector<HTMLElement>("[data-draft-project-trigger]");
+  if (!projectPicker) throw new Error("The draft project picker did not render.");
+  await userEvent.click(page.elementLocator(projectPicker));
+  await userEvent.click(page.getByRole("option", { name: "alpha" }));
+  await userEvent.click(editor);
+  await expect.element(row("ours.md")).toHaveAttribute("aria-disabled", "true");
+  await userEvent.keyboard("{Enter}");
+  expect(editor.element().textContent).toBe("@");
+
+  releaseAlpha();
+  // The waiting Enter takes the new project's file, by the new project's path.
+  await expect.element(page.getByRole("button", { name: "Preview theirs.md" })).toBeVisible();
+  expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+    "[theirs.md](theirs.md) ",
+  );
 });

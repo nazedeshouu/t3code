@@ -1103,6 +1103,196 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
+    it.effect("lists files beside directories, by what symlinks point to, when asked", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-files-" });
+        yield* writeTextFile(cwd, "src/index.ts", "");
+        yield* writeTextFile(cwd, "release notes.md", "");
+        yield* fileSystem.symlink("src", path.join(cwd, "link"));
+        yield* fileSystem.symlink("missing", path.join(cwd, "dangling"));
+
+        const result = yield* workspaceEntries.browse({
+          partialPath: "./",
+          cwd,
+          includeFiles: true,
+        });
+
+        expect(result).toEqual({
+          parentPath: cwd,
+          entries: [
+            { name: "link", fullPath: path.join(cwd, "link"), kind: "directory" },
+            {
+              name: "release notes.md",
+              fullPath: path.join(cwd, "release notes.md"),
+              kind: "file",
+            },
+            { name: "src", fullPath: path.join(cwd, "src"), kind: "directory" },
+          ],
+        });
+      }),
+    );
+
+    it.effect("reads ~/ from the root when it spells out the way to home, even mid-typing", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir({ prefix: "t3code-workspace-browse-home-" });
+        yield* writeTextFile(home, "notes/todo.md", "");
+        const homeParent = path.dirname(home);
+        const homeName = path.basename(home);
+
+        const browse = (partialPath: string, includeFiles?: boolean) =>
+          workspaceEntries
+            .browse({ partialPath, ...(includeFiles ? { includeFiles } : {}) })
+            .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+        const names = (result: { entries: ReadonlyArray<{ name: string }> }) =>
+          result.entries.map((entry) => entry.name);
+
+        expect((yield* browse("~/notes/")).parentPath).toBe(path.join(home, "notes"));
+        expect((yield* browse(`~${home}/notes/`)).parentPath).toBe(path.join(home, "notes"));
+        // Home's parent is no folder inside home, so it is read from the root while being typed.
+        const parent = yield* browse(`~${homeParent}/`);
+        expect(parent.parentPath).toBe(homeParent);
+        expect(names(parent)).toContain(homeName);
+        const partialName = `~${homeParent}/${homeName.slice(0, -3)}`;
+        expect(names(yield* browse(partialName))).toContain(homeName);
+        expect(names(yield* browse(partialName, true))).toContain(homeName);
+
+        // A folder that does exist under home keeps the usual meaning of ~/.
+        const firstSegment = home.split(path.sep)[1]!;
+        yield* writeTextFile(home, `${firstSegment}/mine.md`, "");
+        const own = yield* browse(`~/${firstSegment}/`, true);
+        expect(own.parentPath).toBe(path.join(home, firstSegment));
+        expect(names(own)).toEqual(["mine.md"]);
+      }),
+    );
+
+    it.effect("lists the root folder on the way to home alongside ~/", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir({ prefix: "t3code-workspace-browse-toward-home-" });
+        yield* writeTextFile(home, "notes/todo.md", "");
+        const firstSegment = home.split(path.sep)[1]!;
+        const rootFolder = {
+          name: firstSegment,
+          fullPath: path.join(path.resolve("/"), firstSegment),
+          kind: "directory",
+          outsideListing: true,
+        };
+        const browse = (partialPath: string, includeFiles = true) =>
+          workspaceEntries
+            .browse({ partialPath, includeFiles })
+            .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+        const names = (result: { entries: ReadonlyArray<{ name: string }> }) =>
+          result.entries.map((entry) => entry.name);
+
+        // `~/Us` is on its way to `~/Users/…`, which is read from the root.
+        const listed = yield* browse("~/");
+        expect(listed.parentPath).toBe(home);
+        expect(listed.entries).toContainEqual(rootFolder);
+        expect((yield* browse(`~/${firstSegment.slice(0, 2)}`)).entries).toContainEqual(rootFolder);
+        expect((yield* browse(`~/${firstSegment}/`)).parentPath).toBe(rootFolder.fullPath);
+
+        // Not for a name it does not match, a folder below home, or the directory picker.
+        expect(names(yield* browse("~/no"))).toEqual(["notes"]);
+        expect(names(yield* browse("~/notes/"))).toEqual(["todo.md"]);
+        expect(names(yield* browse("~/", false))).toEqual(["notes"]);
+
+        // A folder of that name under home is the one `~/` means, so it is listed alone.
+        yield* writeTextFile(home, `${firstSegment}/mine.md`, "");
+        expect((yield* browse(`~/${firstSegment}`)).entries).toEqual([
+          { name: firstSegment, fullPath: path.join(home, firstSegment), kind: "directory" },
+        ]);
+      }),
+    );
+
+    it.effect("matches a typed name the same way however many entries the folder holds", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-large-" });
+        yield* Effect.forEach(
+          Array.from({ length: 2001 }, (_, index) => `file-${index}.txt`).concat([
+            "z-components.ts",
+            "compose.yaml",
+            ".env",
+          ]),
+          (name) => fileSystem.writeFileString(path.join(cwd, name), ""),
+          { concurrency: 64 },
+        );
+        const browse = (partialPath: string, includeFiles = true) =>
+          workspaceEntries.browse({ partialPath, cwd, includeFiles });
+        const names = (result: { entries: ReadonlyArray<{ name: string }> }) =>
+          result.entries.map((entry) => entry.name);
+
+        const everything = yield* browse("./");
+        expect(everything.entries).toHaveLength(2000);
+        expect(everything.truncated).toBe(true);
+        expect(names(everything)).not.toContain("z-components.ts");
+
+        // Narrowed before the cap, by the matcher the client ranks with: prefix, then substring.
+        const narrowed = yield* browse("./comp");
+        expect(names(narrowed)).toEqual(["compose.yaml", "z-components.ts"]);
+        expect(narrowed.truncated).toBeUndefined();
+        // A typed dot is a name to match, not the directory itself.
+        expect(names(yield* browse("./."))).toEqual([".env"]);
+        // The directory picker still matches by prefix and lists folders only.
+        expect(names(yield* browse("./comp", false))).toEqual([]);
+      }),
+    );
+
+    it.effect("reports an unreadable folder to a file browse and shows the picker none", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-denied-" });
+        const deny = () =>
+          vi
+            .mocked(NodeFSP.readdir)
+            .mockRejectedValueOnce(Object.assign(new Error("denied"), { code: "EACCES" }));
+
+        deny();
+        const fileBrowse = yield* workspaceEntries
+          .browse({ partialPath: "./", cwd, includeFiles: true })
+          .pipe(Effect.flip);
+        deny();
+        const picker = yield* workspaceEntries.browse({ partialPath: "./", cwd });
+
+        expect(fileBrowse).toMatchObject({
+          _tag: "WorkspaceEntriesReadDirectoryError",
+          permissionDenied: true,
+          pathMissing: false,
+        });
+        expect(picker.entries).toEqual([]);
+      }),
+    );
+
+    it.effect("looks for a bare name in the given cwd, never in the server's own directory", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-bare-name-" });
+        yield* writeTextFile(cwd, "notes.md", "");
+        yield* writeTextFile(cwd, "src/index.ts", "");
+
+        const inProject = yield* workspaceEntries.browse({
+          partialPath: "no",
+          cwd,
+          includeFiles: true,
+        });
+        const withoutProject = yield* workspaceEntries
+          .browse({ partialPath: "no", includeFiles: true })
+          .pipe(Effect.flip);
+
+        expect(inProject.parentPath).toBe(cwd);
+        expect(inProject.entries.map((entry) => entry.name)).toEqual(["notes.md"]);
+        expect(withoutProject._tag).toBe("WorkspaceEntriesCurrentProjectRequiredError");
+      }),
+    );
+
     it.effect("marks only a missing directory as missing when browsing fails", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;

@@ -29,18 +29,29 @@ export type FilesystemGetMetadataResult = typeof FilesystemGetMetadataResult.Typ
 export const FilesystemBrowseInput = Schema.Struct({
   partialPath: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
   cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
+  /** Lists files too and marks each entry's kind. Older servers ignore it and list directories. */
+  includeFiles: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseInput = typeof FilesystemBrowseInput.Type;
 
 export const FilesystemBrowseEntry = Schema.Struct({
   name: TrimmedNonEmptyString,
   fullPath: TrimmedNonEmptyString,
+  /** Set when the request asked for files; an entry without it is a directory. */
+  kind: Schema.optional(Schema.Literals(["file", "directory"])),
+  /**
+   * Set on an entry that is not inside `parentPath`. A listing of `~/` carries one: the root
+   * folder that `~/Users/…` is read from, so a client can offer it as `~/Us` is typed.
+   */
+  outsideListing: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 
 export const FilesystemBrowseResult = Schema.Struct({
   parentPath: TrimmedNonEmptyString,
   entries: Schema.Array(FilesystemBrowseEntry),
+  /** More entries matched than one listing carries; a longer typed name narrows them. */
+  truncated: Schema.optional(Schema.Boolean),
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
 
@@ -66,6 +77,8 @@ export class FilesystemBrowseError extends Schema.TaggedError<FilesystemBrowseEr
     platform: Schema.optional(TrimmedNonEmptyString),
     /** Set when the directory does not exist; older clients ignore it. */
     pathMissing: Schema.optional(Schema.Boolean),
+    /** Set when a file-inclusive browse may not read the directory. */
+    permissionDenied: Schema.optional(Schema.Boolean),
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -78,6 +91,7 @@ export class FilesystemBrowseError extends Schema.TaggedError<FilesystemBrowseEr
     readonly parentPath?: string;
     readonly platform?: string;
     readonly pathMissing?: boolean;
+    readonly permissionDenied?: boolean;
     readonly cause?: unknown;
   }) {
     const cwd = props.cwd === undefined ? "" : ` from '${props.cwd}'`;

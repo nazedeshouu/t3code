@@ -653,6 +653,7 @@ function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntries
   readonly parentPath?: string;
   readonly platform?: string;
   readonly pathMissing?: boolean;
+  readonly permissionDenied?: boolean;
 } {
   switch (error._tag) {
     case "WorkspaceEntriesWindowsPathUnsupportedError":
@@ -664,6 +665,7 @@ function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntries
         failure: "read_directory_failed",
         parentPath: error.parentPath,
         ...(error.pathMissing ? { pathMissing: true } : {}),
+        ...(error.permissionDenied ? { permissionDenied: true } : {}),
       };
     default:
       return unexpectedCompatibilityError(error);

@@ -1,5 +1,6 @@
 import type { ChatComposerProps } from "./ChatComposer";
 import { type ComposerCommandItem } from "./ComposerCommandMenu";
+import { type PathMenuKey } from "./useComposerPathKeys";
 import {
   type ComposerDispatchMode,
   resolveComposerDispatchMode,
@@ -65,6 +66,13 @@ export function composerCommandKeyHandler(input: {
   readonly composerMenuOpenRef: RefObject<boolean>;
   readonly composerMenuItemsRef: RefObject<ComposerCommandItem[]>;
   readonly activeComposerMenuItemRef: RefObject<ComposerCommandItem | null>;
+  /**
+   * Offers a key to the Labs `@` path menu; true when the menu took it. A key the menu held for
+   * its rows and then had no use for runs `whenUnclaimed` instead.
+   */
+  readonly onPathMenuKey: (key: PathMenuKey, whenUnclaimed: () => void) => boolean;
+  /** The `@` menu has no row and is off screen, as for prose (`thanks @sam`). */
+  readonly pathMenuHidden: boolean;
   readonly setComposerDraftPrompt: (
     target: ChatComposerProps["composerDraftTarget"],
     prompt: string,
@@ -89,7 +97,7 @@ export function composerCommandKeyHandler(input: {
     rangeStart: number,
     rangeEnd: number,
     replacement: string,
-    options?: { expandedCursorAfterReplace?: number },
+    options?: { expectedText?: string; expandedCursorAfterReplace?: number },
   ) => boolean;
   readonly submitComposer: (
     event: undefined,
@@ -124,6 +132,8 @@ export function composerCommandKeyHandler(input: {
     composerMenuOpenRef,
     composerMenuItemsRef,
     activeComposerMenuItemRef,
+    onPathMenuKey,
+    pathMenuHidden,
     setComposerDraftPrompt,
     setComposerDraftThreadContexts,
     setComposerDraftEnvironmentContexts,
@@ -235,16 +245,61 @@ export function composerCommandKeyHandler(input: {
     if (key === "Tab" && event.shiftKey && submissionIntent === null) {
       return applyListEdit(event, listOutdentForTab);
     }
+    // What Enter and Tab do when no menu takes them: send, or continue a list.
+    const sendOrEditList = (): boolean => {
+      if (submissionIntent) {
+        submitComposer(
+          undefined,
+          resolveComposerDispatchMode({
+            running: phase === "running" || phase === "connecting",
+            alternateModifier: submissionIntent === "alternate",
+            activeTurnDefault: followUpBehavior,
+            canSteer,
+          }),
+          submissionIntent,
+        );
+        return true;
+      }
+      if (key === "Enter" && isTaskItem) return false;
+      if (key === "Enter" || (key === "Tab" && !event.shiftKey)) {
+        return applyListEdit(event, key === "Enter" ? listContinuationForEnter : listIndentForTab);
+      }
+      return false;
+    };
     const { trigger } = resolveActiveComposerTrigger();
+    // A held Enter that no menu took is still a keypress. Where it neither sends nor edits a
+    // list, as with Mod+Enter to send, it breaks the line the way it would have at once.
+    const replayEnterOrTab = () => {
+      if (!sendOrEditList() && key === "Enter") composerEditorRef.current?.insertNewline();
+    };
+    // A held Space lands where it was pressed, right after the `@` text as it then stood. By
+    // then the user may have typed on (`@src/`, Space, `and`) or closed the menu, so the caret
+    // can be anywhere and only moves along if the Space lands before it. If the `@` text itself
+    // has changed, the place is gone and so is the Space.
+    const heldToken = trigger
+      ? readComposerSnapshot().value.slice(trigger.rangeStart, trigger.rangeEnd)
+      : "";
+    const typeHeldSpace = () => {
+      const caret = composerEditorRef.current?.readSelectionRange().end;
+      if (!trigger || caret === undefined) return;
+      applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, `${heldToken} `, {
+        expectedText: heldToken,
+        expandedCursorAfterReplace: caret < trigger.rangeEnd ? caret : caret + 1,
+      });
+    };
     const menuIsActive =
       !isLiteralPendingAnswer && (composerMenuOpenRef.current || trigger !== null);
     if (key === "Escape") {
       if (event.isComposing || event.keyCode === 229) return false;
-      if (!menuIsActive && promptSuggestion !== null && promptRef.current.length === 0) {
+      // Escape closes a menu that is on screen. A hidden one has nothing to close, so the key
+      // goes on to whatever listens outside the composer. Enter and Space still ask the hidden
+      // menu below: its answer may be on the way.
+      const menuIsShown = menuIsActive && !pathMenuHidden;
+      if (!menuIsShown && promptSuggestion !== null && promptRef.current.length === 0) {
         dismissPromptSuggestion();
         return true;
       }
-      if (!menuIsActive) return false;
+      if (!menuIsShown) return false;
       dismissComposerTrigger(trigger);
       composerMenuOpenRef.current = false;
       return true;
@@ -260,8 +315,19 @@ export function composerCommandKeyHandler(input: {
         nudgeComposerMenuHighlight("ArrowUp");
         return true;
       }
-      if ((key === "Enter" || key === "Tab") && selectedItem) {
-        onSelectComposerItem(selectedItem);
+      if (key === "Enter" || key === "Tab") {
+        if (onPathMenuKey("choose", replayEnterOrTab)) return true;
+        if (selectedItem) {
+          onSelectComposerItem(selectedItem);
+          return true;
+        }
+      }
+      if (
+        key === " " &&
+        !event.isComposing &&
+        event.keyCode !== 229 &&
+        onPathMenuKey("space", typeHeldSpace)
+      ) {
         return true;
       }
     }
@@ -283,24 +349,7 @@ export function composerCommandKeyHandler(input: {
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
-    if (submissionIntent) {
-      submitComposer(
-        undefined,
-        resolveComposerDispatchMode({
-          running: phase === "running" || phase === "connecting",
-          alternateModifier: submissionIntent === "alternate",
-          activeTurnDefault: followUpBehavior,
-          canSteer,
-        }),
-        submissionIntent,
-      );
-      return true;
-    }
-    if (key === "Enter" && isTaskItem) return false;
-    if (key === "Enter" || (key === "Tab" && !event.shiftKey)) {
-      return applyListEdit(event, key === "Enter" ? listContinuationForEnter : listIndentForTab);
-    }
-    return false;
+    return sendOrEditList();
   };
 
   return onComposerCommandKey;

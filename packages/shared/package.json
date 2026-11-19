@@ -235,6 +235,10 @@
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"
     },
+    "./pathEntryMatch": {
+      "types": "./src/pathEntryMatch.ts",
+      "import": "./src/pathEntryMatch.ts"
+    },
     "./qrCode": {
       "types": "./src/qrCode.ts",
       "import": "./src/qrCode.ts"

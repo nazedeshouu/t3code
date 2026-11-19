@@ -6,6 +6,11 @@ import {
   matchComposerEnvironmentItems,
   matchComposerThreadItems,
 } from "@t3tools/client-runtime/composerThreadItems";
+import {
+  isComposerPathMenuHidden,
+  isComposerPathQueryProse,
+  orderComposerMentionItems,
+} from "@t3tools/client-runtime/composerPathMention";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import type {
@@ -47,8 +52,9 @@ import {
   matchesPullRequestQuery,
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
-import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { type ComposerCommandItem, isComposerItemSelectable } from "./ComposerCommandMenu";
 import { matchComposerModelItems } from "./composerModelMentions";
+import { useComposerPathMention } from "./useComposerPathMention";
 import type { ModelEsque } from "./providerIconUtils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import {
@@ -83,6 +89,7 @@ export function useComposerMenuItems({
   workspaceSkillsScanning,
   questionAttachmentTarget,
   modelMentions,
+  betterFileMentions,
 }: {
   readonly composerTrigger: ComposerTrigger | null;
   readonly environmentId: EnvironmentId;
@@ -107,6 +114,8 @@ export function useComposerMenuItems({
     readonly instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
     readonly modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   };
+  /** Labs: `@` browses directories and opens folders. Off keeps the project-wide search alone. */
+  readonly betterFileMentions: boolean;
 }) {
   // Thread mentions rank by recency as of when the composer mounted.
   const [now] = useState(() => Date.now());
@@ -140,10 +149,18 @@ export function useComposerMenuItems({
     ...identity,
     machine: environmentMachines.get(identity.environmentId) ?? ("server" as const),
   }));
+  // The two `@` file behaviours part here: only one of these hooks gets a target, and the other
+  // stays idle and empty.
+  const pathMentionTarget =
+    isPathTrigger && betterFileMentions
+      ? { environmentId, cwd: gitCwd, query: pathTriggerQuery }
+      : null;
+  const pathMention = useComposerPathMention(pathMentionTarget);
+  const searchesWorkspace = isPathTrigger && !betterFileMentions;
   const workspaceEntries = useComposerPathSearch({
     environmentId,
-    cwd: isPathTrigger ? gitCwd : null,
-    query: isPathTrigger ? pathTriggerQuery : null,
+    cwd: searchesWorkspace ? gitCwd : null,
+    query: searchesWorkspace ? pathTriggerQuery : null,
   });
 
   const pullRequestListTargets =
@@ -207,7 +224,8 @@ export function useComposerMenuItems({
   const items = ((): ComposerCommandItem[] => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return [
+      if (pathMention.browse) return [...pathMention.items];
+      const otherMentions = [
         ...matchComposerThreadItems({
           shells: environmentThreadShells,
           environmentId,
@@ -229,6 +247,12 @@ export function useComposerMenuItems({
           modelOptionsByInstance: modelMentions.modelOptionsByInstance,
           query: composerTrigger.query,
         }),
+      ];
+      if (betterFileMentions) {
+        return orderComposerMentionItems(pathMention.items, pathMention, otherMentions);
+      }
+      return [
+        ...otherMentions,
         ...workspaceEntries.entries.map((entry) => ({
           id: `path:${entry.kind}:${entry.path}`,
           type: "path" as const,
@@ -416,7 +440,7 @@ export function useComposerMenuItems({
     return [];
   })();
   const isLoading =
-    (composerTriggerKind === "path" && workspaceEntries.isPending) ||
+    (composerTriggerKind === "path" && (workspaceEntries.isPending || pathMention.isLoading)) ||
     ((composerTriggerKind === "skill" || composerTriggerKind === "slash-command") &&
       workspaceSkillsScanning) ||
     (composerTriggerKind === "pull-request" &&
@@ -444,10 +468,44 @@ export function useComposerMenuItems({
         ? `No pull request matches ${composerTrigger.query}.`
         : "No pull requests found in this repository.";
     }
-    return composerTriggerKind === "path"
-      ? "No matching files or folders."
-      : "No matching command.";
+    return composerTriggerKind === "path" ? pathMention.emptyState : "No matching command.";
   })();
 
-  return { items, isLoading, emptyState };
+  // With no row to choose, Enter and the menu's visibility both turn on how the query reads.
+  const pathMenuHasNoChoice = pathMentionTarget !== null && !items.some(isComposerItemSelectable);
+  const pathQuery = pathMentionTarget?.query ?? "";
+  const pathQueryQuoted = composerTrigger?.quoted === true;
+  const pathQueryIsProse =
+    pathMenuHasNoChoice &&
+    pathMention.miss !== "pending" &&
+    isComposerPathQueryProse(pathQuery, pathQueryQuoted, pathMention.miss);
+  // What a pending query goes by: whether the menu was hidden for the query before it.
+  const [pathMenuWasHidden, setPathMenuWasHidden] = useState<boolean | null>(null);
+  const pathMenuHidden =
+    pathMenuHasNoChoice &&
+    isComposerPathMenuHidden(pathQuery, pathQueryQuoted, pathMention.miss, pathMenuWasHidden);
+  const pathMenuVisibility = pathMentionTarget === null ? null : pathMenuHidden;
+  if (pathMenuWasHidden !== pathMenuVisibility) setPathMenuWasHidden(pathMenuVisibility);
+
+  return {
+    items,
+    isLoading,
+    emptyState,
+    /** The Labs `@` path menu behind `items`; its target is null whenever that menu is not in play. */
+    pathMenu: {
+      target: pathMentionTarget,
+      /** Nothing more is on its way for the target: the rows answer it, or it came back empty or failed. */
+      settled: !pathMention.isLoading,
+      resultKey: pathMention.resultKey,
+      browse: pathMention.browse,
+      prose: pathQueryIsProse,
+      hidden: pathMenuHidden,
+      /** The lookup itself went wrong, so Enter waits on the user: Esc keeps the text as typed. */
+      showsLookupError:
+        pathMenuHasNoChoice &&
+        (pathMention.miss === "failed" ||
+          pathMention.miss === "missing-folder" ||
+          pathMention.miss === "no-access"),
+    },
+  };
 }
