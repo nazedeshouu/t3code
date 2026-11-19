@@ -324,6 +324,14 @@ describe("ClientSettings notifications", () => {
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("inAppNotificationsEnabled");
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
   });
+
+  it("keeps slow request warnings on when existing settings omit the preference", () => {
+    expect(decodeClientSettings({}).slowRequestWarningsEnabled).toBe(true);
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("slowRequestWarningsEnabled");
+    expect(
+      decodeClientSettingsPatch({ slowRequestWarningsEnabled: false }).slowRequestWarningsEnabled,
+    ).toBe(false);
+  });
 });
 
 describe("ClientSettings quit confirmation", () => {

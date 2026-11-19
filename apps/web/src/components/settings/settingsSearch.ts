@@ -692,6 +692,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["notification toast popup completion input approval failure"],
   },
   {
+    id: "slow-request-warnings",
+    title: msg("Slow request warnings"),
+    to: "/settings/general",
+    searchTerms: [
+      "some requests are slow notification toast latency waiting timeout server connection",
+    ],
+  },
+  {
     id: "language",
     title: msg("Language"),
     to: "/settings/general",

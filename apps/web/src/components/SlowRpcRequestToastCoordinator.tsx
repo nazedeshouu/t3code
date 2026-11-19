@@ -1,3 +1,9 @@
+import {
+  ensureClientSettingsHydrated,
+  getClientSettings,
+  isClientSettingsHydrated,
+  subscribeClientSettings,
+} from "../hooks/useSettings";
 import { type SlowRpcAckRequest, subscribeSlowRpcAckRequests } from "../rpc/requestLatencyState";
 import { toastManager } from "./ui/toast";
 
@@ -31,9 +37,15 @@ function SlowRequestDetails({ requests }: { requests: ReadonlyArray<SlowRpcAckRe
 /** One warning toast that tracks the set of slow requests while any are outstanding. */
 export function startSlowRpcRequestToasts(): () => void {
   let toastId: ReturnType<typeof toastManager.add> | null = null;
+  let slowRequests: ReadonlyArray<SlowRpcAckRequest> = [];
+  let enabled = getClientSettings().slowRequestWarningsEnabled;
+  // Until saved settings load, the default (on) would override a saved "off".
+  let settingsLoaded = isClientSettingsHydrated();
+  let stopped = false;
 
-  const unsubscribe = subscribeSlowRpcAckRequests((slowRequests) => {
-    if (slowRequests.length === 0) {
+  const sync = () => {
+    if (stopped) return;
+    if (!settingsLoaded || !enabled || slowRequests.length === 0) {
       if (toastId !== null) {
         toastManager.close(toastId);
         toastId = null;
@@ -58,10 +70,34 @@ export function startSlowRpcRequestToasts(): () => void {
     } else {
       toastManager.update(toastId, nextToast);
     }
+  };
+
+  const unsubscribeRequests = subscribeSlowRpcAckRequests((requests) => {
+    slowRequests = requests;
+    sync();
+  });
+  // Requests are still tracked while warnings are off, so turning them on shows any already slow.
+  const unsubscribeSettings = subscribeClientSettings(() => {
+    const next = getClientSettings().slowRequestWarningsEnabled;
+    if (next === enabled) return;
+    enabled = next;
+    sync();
   });
 
+  if (!settingsLoaded) {
+    // A failed load keeps the default, so warnings still work without saved settings.
+    const onSettingsSettled = () => {
+      settingsLoaded = true;
+      enabled = getClientSettings().slowRequestWarningsEnabled;
+      sync();
+    };
+    void ensureClientSettingsHydrated().then(onSettingsSettled, onSettingsSettled);
+  }
+
   return () => {
-    unsubscribe();
+    stopped = true;
+    unsubscribeRequests();
+    unsubscribeSettings();
     if (toastId !== null) toastManager.close(toastId);
   };
 }
